@@ -54,6 +54,9 @@
 /* Flushes the block device page cache; the port keeps up to 8 KB dirty. */
 #define MICROPY_PY_OS_SYNC              (1)
 #define MICROPY_PY_IO                   (1)
+/* print(..., file=f) needs both this and MICROPY_PY_IO; sys_stdio_mphal.c is
+ * already in the build to provide sys.stdin/stdout/stderr. */
+#define MICROPY_PY_SYS_STDFILES         (1)
 #define MICROPY_READER_VFS              (1)
 #define MICROPY_ENABLE_EXTERNAL_IMPORT  (1)
 #define MICROPY_FATFS_ENABLE_LFN        (1)

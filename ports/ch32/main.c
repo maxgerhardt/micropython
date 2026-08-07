@@ -21,10 +21,6 @@
 #include "flash.h"
 #include "mphalport.h"
 
-#ifndef CH32_FLASH_SELFTEST
-#define CH32_FLASH_SELFTEST (0)
-#endif
-
 #ifndef MICROPY_HW_ITCM_HOT_CODE
 #define MICROPY_HW_ITCM_HOT_CODE (0)
 #endif
@@ -112,45 +108,6 @@ int main(void) {
 
     mp_hal_init();
     uart_init(MICROPY_HW_UART_REPL_BAUD);
-
-    #if CH32_FLASH_SELFTEST
-    /* Proves erase/program works above OpenOCD's assumed 512 KB limit. The page
-     * used is the LAST one in the filesystem region, so this cannot disturb
-     * code. Removed once the block device is trusted. */
-    {
-        static uint32_t pattern[CH32_FLASH_PAGE_SIZE / 4];
-        const uint32_t page = CH32_FLASH_FS_BASE + CH32_FLASH_FS_SIZE
-            - CH32_FLASH_PAGE_SIZE;   /* 0x080EE000 */
-
-        uart_tx_strn("\r\n", 2);
-        mp_printf(&mp_plat_print, "FLASHTEST capacity=%sK\n",
-            FLASH_GetCapacity() == FLASHCapacity_960K ? "960" : "480");
-        mp_printf(&mp_plat_print, "FLASHTEST erase 0x%08x %s\n", (unsigned)page,
-            ch32_flash_erase_page(page) ? "ok" : "FAIL");
-        mp_printf(&mp_plat_print, "FLASHTEST blank %s\n",
-            ch32_flash_page_is_erased(page) ? "ok" : "FAIL");
-
-        for (size_t i = 0; i < CH32_FLASH_PAGE_SIZE / 4; i++) {
-            pattern[i] = 0xA5000000u | i;
-        }
-        mp_printf(&mp_plat_print, "FLASHTEST write %s\n",
-            ch32_flash_write(page, pattern, CH32_FLASH_PAGE_SIZE) ? "ok" : "FAIL");
-
-        bool verified = true;
-        const uint32_t *rb = (const uint32_t *)page;
-        for (size_t i = 0; i < CH32_FLASH_PAGE_SIZE / 4; i++) {
-            if (rb[i] != (0xA5000000u | i)) {
-                mp_printf(&mp_plat_print, "FLASHTEST verify FAIL at %u: %08x\n",
-                    (unsigned)i, (unsigned)rb[i]);
-                verified = false;
-                break;
-            }
-        }
-        if (verified) {
-            mp_printf(&mp_plat_print, "FLASHTEST verify ok\n");
-        }
-    }
-    #endif
 
     // Leave a margin below the true stack top for the C stack itself.
     mp_stack_set_top((void *)&_eusrstack);
