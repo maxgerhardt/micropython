@@ -113,9 +113,34 @@ $(BUILD)/firmware.elf: $(OBJ) $(LD_FILE)
 	$(Q)$(CC) $(LDFLAGS) -o $@ $(OBJ) $(LIBS)
 	$(Q)$(SIZE) $@
 
-deploy: $(BUILD)/firmware.elf
-	bash ../../../scripts/flash.sh $(BUILD)/firmware.elf
+include coreboot.mk
 
-.PHONY: deploy
+BOOT_V3F_ELF = boot_v3f/build/boot_v3f.elf
+SCRIPTS = ../../../scripts
+
+$(BOOT_V3F_ELF):
+	$(MAKE) -C boot_v3f
+
+ifeq ($(CH32_CORE),v5f)
+# The flash driver mass-erases on every program command, so the stub and the
+# MicroPython image cannot be written as two operations -- the second wipes the
+# first while still reporting "Verified OK". They are merged and written once.
+deploy: $(BUILD)/firmware.bin
+	bash $(SCRIPTS)/flash.sh $(BUILD)/firmware.bin 0
+
+$(BUILD)/firmware.bin: $(BUILD)/firmware.elf $(BOOT_V3F_ELF)
+	$(ECHO) "MERGE $@"
+	$(Q)$(PYTHON) $(SCRIPTS)/merge_flash.py -o $@ $(BOOT_V3F_ELF) $(BUILD)/firmware.elf
+
+firmware.bin: $(BUILD)/firmware.bin
+else
+deploy: $(BUILD)/firmware.elf
+	bash $(SCRIPTS)/flash.sh $(BUILD)/firmware.elf 0
+
+firmware.bin: $(BUILD)/firmware.elf
+	$(Q)$(OBJCOPY) -O binary $< $(BUILD)/firmware.bin
+endif
+
+.PHONY: deploy firmware.bin
 
 include $(TOP)/py/mkrules.mk

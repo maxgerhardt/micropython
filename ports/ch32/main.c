@@ -17,16 +17,22 @@
 #include "uart.h"
 #include "mphalport.h"
 
+#ifndef MICROPY_HW_CORE_IS_V5F
+#define MICROPY_HW_CORE_IS_V5F (0)
+#endif
+
 // Provided by the linker script.
 extern uint8_t _heap_start;
 extern uint8_t _heap_end;
 extern uint8_t _eusrstack;
 
+#if MICROPY_HW_BOOT_DELAY_LOOPS
 static void boot_delay(volatile uint32_t n) {
     while (n--) {
         __asm volatile ("nop");
     }
 }
+#endif
 
 int main(void) {
     /* Attach window before touching clocks or peripherals. If firmware ever
@@ -36,7 +42,13 @@ int main(void) {
     boot_delay(MICROPY_HW_BOOT_DELAY_LOOPS);
     #endif
 
+    #if MICROPY_HW_CORE_IS_V5F
+    /* The V3F stub configured every PLL before waking this core. Re-running
+     * SystemInit() here would reconfigure the clock tree underneath a running
+     * core; only refresh the cached clock variables. */
+    #else
     SystemInit();
+    #endif
     SystemAndCoreClockUpdate();
 
     mp_hal_init();
