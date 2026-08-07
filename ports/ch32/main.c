@@ -12,6 +12,7 @@
 #include "py/mphal.h"
 
 #include "shared/runtime/gchelper.h"
+#include "shared/runtime/pyexec.h"
 
 #include "uart.h"
 #include "mphalport.h"
@@ -46,49 +47,32 @@ int main(void) {
     mp_stack_set_limit(12 * 1024);
 
     size_t heap_size = (size_t)(&_heap_end - &_heap_start);
-    gc_init(&_heap_start, &_heap_end);
-    mp_init();
 
-    mp_printf(&mp_plat_print, "MicroPython on %s\n", MICROPY_HW_BOARD_NAME);
-    mp_printf(&mp_plat_print, "heap: %u bytes\n", (unsigned)heap_size);
-
-    // Stage 1 proof-of-life: run a tiny script through the full compile+exec path.
-    const char *src = "print('mp_init ok')";
-    mp_lexer_t *lex = mp_lexer_new_from_str_len(MP_QSTR__lt_stdin_gt_, src, strlen(src), 0);
-    qstr source_name = lex->source_name;
-    mp_parse_tree_t pt = mp_parse(lex, MP_PARSE_FILE_INPUT);
-    mp_obj_t module_fun = mp_compile(&pt, source_name, false);
-    mp_call_function_0(module_fun);
-
-    // Timing self-check: measure a nominal 1-second delay both ways. This
-    // verifies the SysTick divider empirically rather than by inspection.
-    mp_uint_t ms0 = mp_hal_ticks_ms();
-    mp_uint_t us0 = mp_hal_ticks_us();
-    mp_hal_delay_ms(1000);
-    mp_printf(&mp_plat_print, "ticks_ms delta = %u\n",
-        (unsigned)(mp_hal_ticks_ms() - ms0));
-    mp_printf(&mp_plat_print, "ticks_us delta = %u\n",
-        (unsigned)(mp_hal_ticks_us() - us0));
-
-    // Task-5 verification: stay busy, then echo whatever the ISR buffered.
-    // With polled RX these bytes would be lost.
+    // Outer loop: a soft reset (Ctrl-D) re-initialises the heap and VM rather
+    // than resetting the chip, so the console session survives.
     for (;;) {
-        char burst[16];
-        size_t n = 0;
-        mp_hal_delay_ms(500);
-        while (uart_rx_any() && n < sizeof(burst)) {
-            burst[n++] = (char)uart_rx_chr();
-        }
-        if (n > 0) {
-            mp_hal_stdout_tx_strn("rx:", 3);
-            mp_hal_stdout_tx_strn(burst, n);
-            mp_hal_stdout_tx_strn("\r\n", 2);
-        }
-    }
+        gc_init(&_heap_start, &_heap_end);
+        mp_init();
 
-    mp_deinit();
-    for (;;) {
+        mp_printf(&mp_plat_print, "MicroPython on %s\n", MICROPY_HW_BOARD_NAME);
+        mp_printf(&mp_plat_print, "heap: %u bytes\n", (unsigned)heap_size);
+
+        for (;;) {
+            if (pyexec_friendly_repl() != 0) {
+                break;   // Ctrl-D requests a soft reset
+            }
+        }
+
+        mp_printf(&mp_plat_print, "MPY: soft reboot\n");
+        mp_deinit();
     }
+}
+
+// There is no filesystem until the littlefs milestone, but pyexec references
+// this for its run-a-file path. Fail cleanly rather than failing to link.
+mp_lexer_t *mp_lexer_new_from_file(qstr filename) {
+    (void)filename;
+    mp_raise_OSError(MP_ENOENT);
 }
 
 // The GC must see roots held only in callee-saved registers, so spill them via
