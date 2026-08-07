@@ -12,3 +12,4 @@
 /* No attach window needed here: this image is not the reset vector, and the
  * V3F stub runs first. */
 #define MICROPY_HW_BOOT_DELAY_LOOPS (0)
+#define MICROPY_HW_ITCM_HOT_CODE     (1)

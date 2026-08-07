@@ -10,6 +10,7 @@ MEMORY
 	FLASH (rx)     : ORIGIN = 0x00010000, LENGTH = 896K
 	/* Shared region: .text/.rodata, copied from flash by startup. Runs at HCLK
 	   (100 MHz) rather than the V5F core clock; task 6 evaluates alternatives. */
+	ITCM (xrw)     : ORIGIN = 0x200A0000, LENGTH = 128K
 	RAM_CODE (xrw) : ORIGIN = 0x20100000, LENGTH = 256K
 	/* DTCM: zero-wait at the V5F core clock. Holds .data/.bss/stack/heap. */
 	RAM_LOAD (xrw) : ORIGIN = 0x200C0000, LENGTH = 256
@@ -42,7 +43,20 @@ SECTIONS
 		PROVIDE(_loadcode_vma_end = .);
 	}>RAM_LOAD AT>FLASH
 
-    .highcodelalign : 
+    .itcm_text :
+    {
+        . = ALIGN(4);
+        PROVIDE(_itcm_vma_start = .);
+        /* The whole interpreter core. ITCM is 128K; anything that does not
+           fit here falls through to .highcode in the shared region. */
+        */py/*.o(.text .text.*)
+        */shared/runtime/*.o(.text .text.*)
+        . = ALIGN(4);
+        PROVIDE(_itcm_vma_end = .);
+    } >ITCM AT>FLASH
+    PROVIDE(_itcm_lma = LOADADDR(.itcm_text));
+
+    .highcodelalign :
     {       
         . = ALIGN(4);
         PROVIDE(_highcode_lma = .); 

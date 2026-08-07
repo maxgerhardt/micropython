@@ -17,6 +17,10 @@
 #include "uart.h"
 #include "mphalport.h"
 
+#ifndef MICROPY_HW_ITCM_HOT_CODE
+#define MICROPY_HW_ITCM_HOT_CODE (0)
+#endif
+
 #ifndef MICROPY_HW_CORE_IS_V5F
 #define MICROPY_HW_CORE_IS_V5F (0)
 #endif
@@ -40,6 +44,21 @@ int main(void) {
      * after a reset. See MICROPY_HW_BOOT_DELAY_LOOPS. */
     #if MICROPY_HW_BOOT_DELAY_LOOPS
     boot_delay(MICROPY_HW_BOOT_DELAY_LOOPS);
+    #endif
+
+    #if MICROPY_HW_ITCM_HOT_CODE
+    /* Copy the hot section into ITCM, the only memory that is zero-wait at the
+     * V5F's 400 MHz core clock. The SDK startup file copies .highcode but knows
+     * nothing about this section, so it is done here -- before any of the code
+     * it contains is called. */
+    {
+        extern uint32_t _itcm_lma, _itcm_vma_start, _itcm_vma_end;
+        uint32_t *src = &_itcm_lma;
+        uint32_t *dst = &_itcm_vma_start;
+        while (dst < &_itcm_vma_end) {
+            *dst++ = *src++;
+        }
+    }
     #endif
 
     #if MICROPY_HW_CORE_IS_V5F
