@@ -13,6 +13,11 @@ ringbuf_t stdin_ringbuf = { stdin_ringbuf_array, sizeof(stdin_ringbuf_array) };
 #include "uart.h"
 #include "mphalport.h"
 
+#if MICROPY_HW_ENABLE_USBDEV
+#include "shared/tinyusb/mp_usbd_cdc.h"
+#include "usbd.h"
+#endif
+
 /* SysTick0 is the V3F core's counter (SysTick1 belongs to the V5F).
  * STK_CTLR_0 bits, per reference manual 4.6.1.1:
  *   0 EN_0           enable
@@ -92,7 +97,16 @@ void mp_hal_delay_ms(mp_uint_t ms) {
 }
 
 mp_uint_t mp_hal_stdout_tx_strn(const char *str, size_t len) {
+    /* Both consoles receive everything. The UART is always available, so a USB
+     * failure never costs the debug console. */
     uart_tx_strn(str, len);
+
+    #if MICROPY_HW_ENABLE_USBDEV
+    /* Drops the data when no host is attached rather than blocking: a board
+     * with nothing plugged into USB must not stall in print(). */
+    mp_usbd_cdc_tx_strn(str, len);
+    #endif
+
     return len;
 }
 
@@ -105,6 +119,14 @@ int mp_hal_stdin_rx_chr(void) {
         mp_event_handle_nowait();
     }
 }
+
+#if MICROPY_HW_ENABLE_USBDEV
+/* Pumped from the VM hook so the stack keeps running during a long-lived
+ * Python loop; without it the host eventually drops the connection. */
+void mp_hal_ch32_poll_usb(void) {
+    ch32_usbd_task();
+}
+#endif
 
 uintptr_t mp_hal_stdio_poll(uintptr_t poll_flags) {
     uintptr_t ret = 0;

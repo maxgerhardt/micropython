@@ -11,7 +11,10 @@ MEMORY
 	/* Shared region: .text/.rodata, copied from flash by startup. Runs at HCLK
 	   (100 MHz) rather than the V5F core clock; task 6 evaluates alternatives. */
 	ITCM (xrw)     : ORIGIN = 0x200A0000, LENGTH = 128K
-	RAM_CODE (xrw) : ORIGIN = 0x20100000, LENGTH = 256K
+	RAM_CODE (xrw) : ORIGIN = 0x20100000, LENGTH = 240K
+	/* USBFS DMA cannot reach DTCM, so endpoint buffers live here, in
+	   the shared region on the system bus. */
+	USB_RAM (xrw)  : ORIGIN = 0x2013C000, LENGTH = 16K
 	/* DTCM: zero-wait at the V5F core clock. Holds .data/.bss/stack/heap. */
 	RAM_LOAD (xrw) : ORIGIN = 0x200C0000, LENGTH = 256
 	RAM (xrw)      : ORIGIN = (0x200C0000+256), LENGTH = (256K-256)
@@ -159,6 +162,13 @@ SECTIONS
 	  . = ALIGN(4); 
       PROVIDE(_highcode_vma_end1 = .);
 	} >RAM_CODE AT>FLASH 
+
+	.usbram (NOLOAD) :
+	{
+		. = ALIGN(8);
+		*/tinyusb/*(.bss .bss.* COMMON)
+		. = ALIGN(8);
+	} >USB_RAM
 
 	.dalign :
 	{

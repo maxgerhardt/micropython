@@ -58,6 +58,22 @@
 #define MICROPY_HW_USB_MANUFACTURER_STRING "WCH"
 #define MICROPY_HW_USB_PRODUCT_FS_STRING   "CH32H417 MicroPython"
 
+/* The USB stack has to be serviced from two places, and both are needed.
+ *
+ * MICROPY_INTERNAL_EVENT_HOOK runs from mp_event_handle_nowait(), which is what
+ * the REPL spins on while waiting for input -- without it, a board sitting at
+ * the prompt never processes USB at all.
+ *
+ * The VM hooks cover the other case: a long-running Python loop never reaches
+ * the event hook, and the host would eventually drop the connection. */
+void mp_hal_ch32_poll_usb(void);
+#define MICROPY_INTERNAL_EVENT_HOOK mp_hal_ch32_poll_usb()
+#define MICROPY_VM_HOOK_COUNT (16)
+#define MICROPY_VM_HOOK_INIT static uint vm_hook_divisor = MICROPY_VM_HOOK_COUNT;
+#define MICROPY_VM_HOOK_POLL if (--vm_hook_divisor == 0) {         vm_hook_divisor = MICROPY_VM_HOOK_COUNT;                   mp_hal_ch32_poll_usb();                                }
+#define MICROPY_VM_HOOK_LOOP MICROPY_VM_HOOK_POLL
+#define MICROPY_VM_HOOK_RETURN MICROPY_VM_HOOK_POLL
+
 // Filesystem: FAT on the internal flash tail. FAT rather than littlefs because
 // the volume is exposed over USB MSC later and hosts cannot read littlefs.
 #define MICROPY_VFS                     (1)
