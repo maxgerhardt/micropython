@@ -168,6 +168,12 @@ int main(void) {
         mp_printf(&mp_plat_print, "MicroPython on %s\n", MICROPY_HW_BOARD_NAME);
         mp_printf(&mp_plat_print, "heap: %u bytes\n", (unsigned)heap_size);
 
+        /* Startup scripts, both optional. pyexec_file_if_exists reports any
+         * exception to the console and returns, so a bad main.py cannot stop
+         * the REPL from coming up and making the board unusable. */
+        pyexec_file_if_exists("/boot.py");
+        pyexec_file_if_exists("/main.py");
+
         // Ctrl-A switches to the raw REPL, which is how tooling (run-tests.py,
         // mpremote) drives the board. Without dispatching on the mode here,
         // the friendly REPL is all that is ever offered.
