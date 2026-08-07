@@ -70,6 +70,22 @@ int main(void) {
     mp_printf(&mp_plat_print, "ticks_us delta = %u\n",
         (unsigned)(mp_hal_ticks_us() - us0));
 
+    // Task-5 verification: stay busy, then echo whatever the ISR buffered.
+    // With polled RX these bytes would be lost.
+    for (;;) {
+        char burst[16];
+        size_t n = 0;
+        mp_hal_delay_ms(500);
+        while (uart_rx_any() && n < sizeof(burst)) {
+            burst[n++] = (char)uart_rx_chr();
+        }
+        if (n > 0) {
+            mp_hal_stdout_tx_strn("rx:", 3);
+            mp_hal_stdout_tx_strn(burst, n);
+            mp_hal_stdout_tx_strn("\r\n", 2);
+        }
+    }
+
     mp_deinit();
     for (;;) {
     }

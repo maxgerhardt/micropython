@@ -1,5 +1,16 @@
 #include "ch32h417.h"
+#include "py/mpconfig.h"
+#include "py/runtime.h"
+#include "shared/runtime/interrupt_char.h"
 #include "uart.h"
+
+/* Polled RX drops bytes whenever the VM is busy between reads, so the console
+ * is served from an interrupt-filled ring buffer instead. */
+#define UART_RX_BUF_SIZE (256)   /* must be a power of two */
+
+static volatile uint8_t uart_rx_buf[UART_RX_BUF_SIZE];
+static volatile uint16_t uart_rx_head;
+static volatile uint16_t uart_rx_tail;
 
 void uart_init(uint32_t baud) {
     GPIO_InitTypeDef gpio = {0};
@@ -34,6 +45,10 @@ void uart_init(uint32_t baud) {
     usart.USART_Mode = USART_Mode_Tx | USART_Mode_Rx;
     USART_Init(USART1, &usart);
     USART_Cmd(USART1, ENABLE);
+
+    uart_rx_head = uart_rx_tail = 0;
+    USART_ITConfig(USART1, USART_IT_RXNE, ENABLE);
+    NVIC_EnableIRQ(USART1_IRQn);
 }
 
 void uart_tx_strn(const char *str, size_t len) {
@@ -45,12 +60,31 @@ void uart_tx_strn(const char *str, size_t len) {
 }
 
 bool uart_rx_any(void) {
-    return USART_GetFlagStatus(USART1, USART_FLAG_RXNE) != RESET;
+    return uart_rx_head != uart_rx_tail;
 }
 
 int uart_rx_chr(void) {
-    if (USART_GetFlagStatus(USART1, USART_FLAG_RXNE) == RESET) {
+    if (uart_rx_head == uart_rx_tail) {
         return -1;
     }
-    return (int)(USART_ReceiveData(USART1) & 0xff);
+    uint8_t c = uart_rx_buf[uart_rx_tail];
+    uart_rx_tail = (uart_rx_tail + 1) & (UART_RX_BUF_SIZE - 1);
+    return (int)c;
+}
+
+void USART1_IRQHandler(void) __attribute__((interrupt("WCH-Interrupt-fast")));
+void USART1_IRQHandler(void) {
+    if (USART_GetFlagStatus(USART1, USART_FLAG_RXNE) != RESET) {
+        uint8_t c = (uint8_t)(USART_ReceiveData(USART1) & 0xff);
+        if (c == mp_interrupt_char) {
+            /* Break out of a running script; do not buffer the byte. */
+            mp_sched_keyboard_interrupt();
+            return;
+        }
+        uint16_t next = (uart_rx_head + 1) & (UART_RX_BUF_SIZE - 1);
+        if (next != uart_rx_tail) {   /* silently drop on overflow */
+            uart_rx_buf[uart_rx_head] = c;
+            uart_rx_head = next;
+        }
+    }
 }
