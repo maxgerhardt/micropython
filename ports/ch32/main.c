@@ -152,13 +152,6 @@ int main(void) {
     }
 }
 
-// There is no filesystem until the littlefs milestone, but pyexec references
-// this for its run-a-file path. Fail cleanly rather than failing to link.
-mp_lexer_t *mp_lexer_new_from_file(qstr filename) {
-    (void)filename;
-    mp_raise_OSError(MP_ENOENT);
-}
-
 // The GC must see roots held only in callee-saved registers, so spill them via
 // the RISC-V helper (shared/runtime/gchelper_rv32i.s) before scanning the stack.
 void gc_collect(void) {

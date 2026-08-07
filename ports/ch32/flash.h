@@ -28,4 +28,9 @@ bool ch32_flash_write(uint32_t addr, const void *src, size_t len);
 void ch32_flash_read(uint32_t addr, void *dst, size_t len);
 bool ch32_flash_page_is_erased(uint32_t addr);
 
+/* Block device over the region above, exposed to Python as ch32.Flash(). */
+#include "py/obj.h"
+extern const mp_obj_type_t ch32_flash_type;
+void ch32_flashbdev_init(void);
+
 #endif // MICROPY_INCLUDED_CH32_FLASH_H

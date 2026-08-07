@@ -18,6 +18,11 @@ QSTR_DEFS = qstrdefsport.h
 MICROPY_ROM_TEXT_COMPRESSION ?= 1
 MICROPY_FLOAT_IMPL ?= float
 
+# Must be set before extmod.mk, which adds lib/oofatfs to SRC_THIRDPARTY_C when
+# it sees this. Adding those sources to SRC_C by hand instead would drag them
+# into SRC_QSTR, and the qstr preprocessor pass chokes on ff.c's token pasting.
+MICROPY_VFS_FAT = 1
+
 include $(TOP)/py/py.mk
 include $(TOP)/extmod/extmod.mk
 
@@ -66,8 +71,11 @@ SRC_C += \
 	main.c \
 	uart.c \
 	flash.c \
+	flashbdev.c \
+	modch32.c \
 	mphalport.c \
 	fault.c \
+	shared/timeutils/timeutils.c \
 	shared/readline/readline.c \
 	shared/runtime/gchelper_native.c \
 	shared/runtime/interrupt_char.c \
@@ -83,8 +91,13 @@ SRC_S += shared/runtime/gchelper_rv32i.s
 # genhdr/root_pointers.h and MP_STATE_PORT(readline_hist) fails to compile.
 SRC_QSTR += $(SRC_C)
 
+# extmod.mk puts third-party sources (oofatfs) here; they are deliberately not
+# in SRC_C so that SRC_QSTR does not scan them.
+CFLAGS += $(CFLAGS_EXTMOD) $(CFLAGS_THIRDPARTY)
+
 OBJ += $(PY_O)
 OBJ += $(addprefix $(BUILD)/, $(SRC_C:.c=.o))
+OBJ += $(addprefix $(BUILD)/, $(SRC_THIRDPARTY_C:.c=.o))
 OBJ += $(addprefix $(BUILD)/, $(SRC_S:.s=.o))
 OBJ += $(addprefix $(BUILD)/sdk/, $(notdir $(SDK_SRC_C:.c=.o)))
 OBJ += $(addprefix $(BUILD)/sdk/, $(notdir $(SDK_SRC_S:.S=.o)))

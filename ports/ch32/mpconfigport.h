@@ -18,7 +18,7 @@
 #define MICROPY_REPL_EVENT_DRIVEN       (0)
 #define MICROPY_KBD_EXCEPTION           (1)
 #define MICROPY_ENABLE_SOURCE_LINE      (1)
-#define MICROPY_ENABLE_EXTERNAL_IMPORT  (0)
+
 #define MICROPY_LONGINT_IMPL            (MICROPY_LONGINT_IMPL_MPZ)
 #define MICROPY_ENABLE_EMERGENCY_EXCEPTION_BUF (1)
 #define MICROPY_EMERGENCY_EXCEPTION_BUF_SIZE   (256)
@@ -47,13 +47,19 @@
 #define MICROPY_PY_TIME                 (1)
 #define MICROPY_PY_TIME_TICKS           (1)
 
-// No filesystem yet: that arrives with littlefs in Milestone 3. MICROPY_PY_IO
-// defaults on at CORE_FEATURES and pulls in mp_builtin_open_obj, which has
-// nothing to open, so turn it off too.
-#define MICROPY_VFS                     (0)
-#define MICROPY_PY_OS                   (0)
-#define MICROPY_PY_IO                   (0)
-#define MICROPY_READER_VFS              (0)
+// Filesystem: FAT on the internal flash tail. FAT rather than littlefs because
+// the volume is exposed over USB MSC later and hosts cannot read littlefs.
+#define MICROPY_VFS                     (1)
+#define MICROPY_PY_OS                   (1)
+#define MICROPY_PY_IO                   (1)
+#define MICROPY_READER_VFS              (1)
+#define MICROPY_ENABLE_EXTERNAL_IMPORT  (1)
+#define MICROPY_FATFS_ENABLE_LFN        (1)
+/* Token-pasted into a table name by ffunicode.c, so it must be a bare
+ * number: parentheses here produce "pasting uc and ( is invalid". */
+#define MICROPY_FATFS_LFN_CODE_PAGE     437
+#define MICROPY_FATFS_MAX_SS            (512)
+#define MICROPY_FATFS_RPATH             (2)
 
 // Types used by py/ on this target.
 typedef intptr_t mp_int_t;
