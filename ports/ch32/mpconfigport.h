@@ -30,6 +30,8 @@
 #define MICROPY_EMIT_RV32               (0)
 
 #define MICROPY_PY_SYS_PLATFORM         "ch32"
+// Defaults to EXTRA_FEATURES only, but the upstream test suite expects it.
+#define MICROPY_PY_SYS_MAXSIZE          (1)
 #define MICROPY_PY_BUILTINS_HELP        (1)
 #define MICROPY_PY_BUILTINS_HELP_MODULES (1)
 
@@ -57,5 +59,8 @@
 typedef intptr_t mp_int_t;
 typedef uintptr_t mp_uint_t;
 typedef long mp_off_t;
+
+// No SSIZE_MAX in this newlib's headers; sys.maxsize needs it.
+#define MP_SSIZE_MAX (0x7fffffff)
 
 #define MP_STATE_PORT MP_STATE_VM

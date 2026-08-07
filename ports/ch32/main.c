@@ -57,9 +57,18 @@ int main(void) {
         mp_printf(&mp_plat_print, "MicroPython on %s\n", MICROPY_HW_BOARD_NAME);
         mp_printf(&mp_plat_print, "heap: %u bytes\n", (unsigned)heap_size);
 
+        // Ctrl-A switches to the raw REPL, which is how tooling (run-tests.py,
+        // mpremote) drives the board. Without dispatching on the mode here,
+        // the friendly REPL is all that is ever offered.
         for (;;) {
-            if (pyexec_friendly_repl() != 0) {
-                break;   // Ctrl-D requests a soft reset
+            if (pyexec_mode_kind == PYEXEC_MODE_RAW_REPL) {
+                if (pyexec_raw_repl() != 0) {
+                    break;   // Ctrl-D in raw REPL requests a soft reset
+                }
+            } else {
+                if (pyexec_friendly_repl() != 0) {
+                    break;   // Ctrl-D requests a soft reset
+                }
             }
         }
 
