@@ -68,7 +68,10 @@
  * the event hook, and the host would eventually drop the connection. */
 void mp_hal_ch32_poll_usb(void);
 #define MICROPY_INTERNAL_EVENT_HOOK mp_hal_ch32_poll_usb()
-#define MICROPY_VM_HOOK_COUNT (16)
+/* The ISR does the time-critical USB work; tud_task() only drains deferred
+ * events, so polling it every 16 bytecodes cost ~18%% on the benchmark for no
+ * benefit. 256 keeps the host happy and the overhead unmeasurable. */
+#define MICROPY_VM_HOOK_COUNT (256)
 #define MICROPY_VM_HOOK_INIT static uint vm_hook_divisor = MICROPY_VM_HOOK_COUNT;
 #define MICROPY_VM_HOOK_POLL if (--vm_hook_divisor == 0) {         vm_hook_divisor = MICROPY_VM_HOOK_COUNT;                   mp_hal_ch32_poll_usb();                                }
 #define MICROPY_VM_HOOK_LOOP MICROPY_VM_HOOK_POLL

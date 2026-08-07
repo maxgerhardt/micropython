@@ -74,12 +74,19 @@ void ch32_usbd_init(void) {
     NVIC_EnableIRQ(USBFS_IRQn);
 }
 
+/* Diagnostics, queryable from the REPL as ch32.usb_stat(). USB faults on this
+ * chip are otherwise indistinguishable from one another. */
+volatile uint32_t ch32_usbd_task_count;
+volatile uint32_t ch32_usbd_irq_count;
+
 void ch32_usbd_task(void) {
+    ch32_usbd_task_count++;
     tud_task();
 }
 
 void USBFS_IRQHandler(void) __attribute__((interrupt("WCH-Interrupt-fast")));
 void USBFS_IRQHandler(void) {
+    ch32_usbd_irq_count++;
     tud_int_handler(0);
 }
 
