@@ -60,6 +60,16 @@ int main(void) {
     mp_obj_t module_fun = mp_compile(&pt, source_name, false);
     mp_call_function_0(module_fun);
 
+    // Timing self-check: measure a nominal 1-second delay both ways. This
+    // verifies the SysTick divider empirically rather than by inspection.
+    mp_uint_t ms0 = mp_hal_ticks_ms();
+    mp_uint_t us0 = mp_hal_ticks_us();
+    mp_hal_delay_ms(1000);
+    mp_printf(&mp_plat_print, "ticks_ms delta = %u\n",
+        (unsigned)(mp_hal_ticks_ms() - ms0));
+    mp_printf(&mp_plat_print, "ticks_us delta = %u\n",
+        (unsigned)(mp_hal_ticks_us() - us0));
+
     mp_deinit();
     for (;;) {
     }
