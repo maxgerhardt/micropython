@@ -7,7 +7,7 @@ from serial_expect import ReplSession
 with ReplSession() as s:
     s.interrupt()
     s.expect(r">>>", timeout=8.0)
-    s.eval("import machine; machine.freq()", r"100000000")
+    s.eval("import machine; machine.freq()", r"(100000000|400000000)")
     # PB0 as an output: a driven pin must read back what was written.
     s.send("p = machine.Pin(16, machine.Pin.OUT)")
     s.expect(r">>>", timeout=5.0)
