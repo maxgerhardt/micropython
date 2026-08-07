@@ -12,6 +12,10 @@
 
 #include "usbd.h"
 
+#ifndef CH32_USBD_CLOCK_DEBUG
+#define CH32_USBD_CLOCK_DEBUG (0)
+#endif
+
 void ch32_usbd_init(void) {
     /* USBFS needs exactly 48 MHz.
      *
@@ -23,8 +27,34 @@ void ch32_usbd_init(void) {
      * A wrong USB clock presents as a device that never enumerates rather than
      * as any kind of error, so if enumeration fails this is the first thing to
      * check -- read RCC->CFGR2 back over SWD. */
+    /* The USBHS PLL is off after reset (RCC_CTLR bit 20, RCC_USBHS_PLLON), so
+     * it must be configured and started before USBFS can select it. */
+    RCC_USBHSPLLCLKConfig(RCC_USBHSPLLSource_HSI);
+    RCC_USBHSPLLReferConfig(RCC_USBHSPLLRefer_25M);
+    RCC_USBHS_PLLCmd(ENABLE);
+    for (volatile uint32_t i = 0; i < 200000; i++) {
+    }
+
     RCC_USBFSCLKConfig(RCC_USBFSCLKSource_USBHSPLL);
     RCC_USBFS48ClockSourceDivConfig(RCC_USBFS_Div10);
+
+    #if CH32_USBD_CLOCK_DEBUG
+    {
+        extern void uart_tx_strn(const char *str, size_t len);
+        char b[64];
+        int n = 0;
+        const uint32_t ctlr = RCC->CTLR, cfgr2 = RCC->CFGR2;
+        static const char hx[] = "0123456789abcdef";
+        const char *lbl = "\r\nUSBCLK CTLR=";
+        while (*lbl) { b[n++] = *lbl++; }
+        for (int i = 7; i >= 0; i--) { b[n++] = hx[(ctlr >> (i * 4)) & 0xf]; }
+        lbl = " CFGR2=";
+        while (*lbl) { b[n++] = *lbl++; }
+        for (int i = 7; i >= 0; i--) { b[n++] = hx[(cfgr2 >> (i * 4)) & 0xf]; }
+        b[n++] = '\r'; b[n++] = '\n';
+        uart_tx_strn(b, n);
+    }
+    #endif
 
     RCC_HB2PeriphClockCmd(RCC_HB2Periph_GPIOA | RCC_HB2Periph_AFIO, ENABLE);
 
