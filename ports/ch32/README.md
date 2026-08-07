@@ -50,20 +50,51 @@ instruction placement dominates performance.
 
     FLASH     0x00000000   64K   V3F boot stub
     FLASH     0x00010000  896K   V5F image
-    ITCM      0x200A0000  128K   .itcm_text: all of py/ + shared/runtime/ (92K used)
-    RAM_CODE  0x20100000  256K   .highcode: extmod, SDK drivers, port files (42K used)
+    ITCM      0x200A0000  128K   .itcm_text: all of py/ + shared/runtime/ (96K used)
+    RAM_CODE  0x20100000  256K   .highcode: extmod, oofatfs, SDK drivers, port files (64K used)
     DTCM      0x200C0000  256K   .data/.bss/stack/GC heap
 
 `main()` copies `.itcm_text` into ITCM before calling into it; the SDK startup
 file only knows about `.highcode`.
 
+## Filesystem
+
+A 512 KB FAT volume occupies the flash tail at `0x08070000`, mounted at `/`.
+A blank board formats itself on first boot. `boot.py` and `main.py` run at
+startup if present; an exception in either is reported and the REPL still
+comes up.
+
+    0x08000000    64K   V3F boot stub
+    0x08010000   384K   V5F MicroPython image (163 KB used)
+    0x08070000   512K   FAT volume
+    0x080F0000          end of the 960 KB user area
+
+The erase unit is 8 KB while FAT writes 512-byte sectors, so writes go through
+a single 8 KB write-back page cache; `os.sync()` flushes it. The block device
+is also exposed as `ch32.Flash()`.
+
+**FAT on raw flash is not power-loss safe.** An interruption between erase and
+reprogram loses the affected 8 KB page. FAT was chosen over littlefs because
+the volume is exposed over USB MSC later and hosts cannot read littlefs.
+
+**Reflashing firmware erases the filesystem.** This chip's flash driver
+mass-erases on every program command, so `make deploy` wipes user files.
+
+Note that OpenOCD reports `flash size = 512kbytes`; that is an assumption in
+its `wch_riscv` driver, not a hardware limit. The part is 960 KB
+(`FLASH_CFGR0` bit 28 set) and firmware writes the upper region directly,
+verified by erasing and programming at `0x080EE000`.
+
+File timestamps are a fixed date: nothing sets the RTC yet. The plan is to
+sync it over NTP once Ethernet lands.
+
 ## Measured
 
-    text 137964   data 3120   bss 17432     heap ~235 KB
+    text 163464   data 3468   bss 26144     heap ~232 KB
     core clock 400 MHz
 
-    benchmark  254 ms   (V3F baseline 4297 ms -> 16.9x)
-    upstream tests: 461 passed / 0 failed / 110 skipped (15210 testcases)
+    benchmark  279 ms   (V3F baseline 4297 ms -> 15.4x)
+    upstream tests: 470 passed / 0 failed (15270 testcases)
 
 See `docs/hw/benchmarks.md` for the layout comparison.
 
@@ -94,6 +125,6 @@ compiled from source with the same flags.
 
 ## Not yet implemented
 
-Filesystem, USB, Ethernet, and the RV32 native emitter (which can be enabled
+USB, Ethernet, and the RV32 native emitter (which can be enabled
 later targeting plain RV32IMC — the core is a superset, so no `xw` support is
 needed in the emitter).
