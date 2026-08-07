@@ -1,0 +1,121 @@
+# MicroPython port for the WCH CH32H417 (QingKe V3F core).
+BOARD ?= CH32H417QEU6_V3F
+BOARD_DIR ?= boards/$(BOARD)
+
+ifeq ($(wildcard $(BOARD_DIR)/.),)
+$(error Invalid BOARD specified: $(BOARD_DIR))
+endif
+
+BUILD ?= build-$(BOARD)
+
+include ../../py/mkenv.mk
+-include mpconfigport.mk
+include $(BOARD_DIR)/mpconfigboard.mk
+
+# qstr definitions (must come before including py.mk)
+QSTR_DEFS = qstrdefsport.h
+
+MICROPY_ROM_TEXT_COMPRESSION ?= 1
+MICROPY_FLOAT_IMPL ?= float
+
+include $(TOP)/py/py.mk
+include $(TOP)/extmod/extmod.mk
+
+# Toolchain: WCH's GCC, the only one that understands the custom "xw" extension.
+#
+# $(HOME) is a Windows-style path under Git Bash (C:\Users\...), and the
+# backslashes get swallowed when recipes are re-quoted through the shell.
+# Normalise to forward slashes, which both sh and the native gcc accept.
+HOME_FWD := $(subst \,/,$(HOME))
+PIO_PKGS ?= $(HOME_FWD)/.platformio/packages
+CROSS_COMPILE ?= $(PIO_PKGS)/toolchain-riscv/bin/riscv-wch-elf-
+SDK ?= $(PIO_PKGS)/framework-wch-noneos-sdk
+
+include sdk.mk
+
+ARCHFLAGS = -march=rv32imafc_zba_zbb_zbc_zbs_xw -mabi=ilp32f
+
+INC += -I. -I$(TOP) -I$(BUILD) -I$(BOARD_DIR)
+
+ifeq ($(DEBUG),1)
+COPT ?= -Og -g3
+else
+COPT ?= -Os -g -DNDEBUG
+endif
+
+CFLAGS += $(INC) $(ARCHFLAGS) $(CFLAGS_BOARD) \
+	-std=gnu11 -Wall -Wno-comment \
+	-msmall-data-limit=8 -mno-save-restore \
+	-ffunction-sections -fdata-sections \
+	-fsingle-precision-constant \
+	-DMICROPY_FLOAT_IMPL=MICROPY_FLOAT_IMPL_FLOAT \
+	-DMICROPY_HW_FPU=1 \
+	$(COPT)
+
+# mkrules.mk assembles .s files with "$(AS) $(AFLAGS)", which does not inherit
+# CFLAGS. Without the arch flags here the assembler emits a default-ABI object
+# and the link fails with "can't link double-float modules with single-float".
+AFLAGS += $(ARCHFLAGS)
+
+LDFLAGS += $(ARCHFLAGS) -nostartfiles -Wl,--gc-sections \
+	-Wl,-Map=$@.map -T $(LD_FILE)
+
+LIBS += -lm
+
+SRC_C += \
+	main.c \
+	uart.c \
+	mphalport.c \
+	fault.c \
+	shared/readline/readline.c \
+	shared/runtime/gchelper_native.c \
+	shared/runtime/interrupt_char.c \
+	shared/runtime/pyexec.c \
+	shared/runtime/stdout_helpers.c \
+	shared/runtime/sys_stdio_mphal.c \
+
+# RISC-V register-spilling helper, so the GC scans callee-saved registers.
+SRC_S += shared/runtime/gchelper_rv32i.s
+
+# Scan our sources for qstrs and MP_REGISTER_ROOT_POINTER declarations.
+# Without this, e.g. readline's history root pointer never reaches
+# genhdr/root_pointers.h and MP_STATE_PORT(readline_hist) fails to compile.
+SRC_QSTR += $(SRC_C)
+
+OBJ += $(PY_O)
+OBJ += $(addprefix $(BUILD)/, $(SRC_C:.c=.o))
+OBJ += $(addprefix $(BUILD)/, $(SRC_S:.s=.o))
+OBJ += $(addprefix $(BUILD)/sdk/, $(notdir $(SDK_SRC_C:.c=.o)))
+OBJ += $(addprefix $(BUILD)/sdk/, $(notdir $(SDK_SRC_S:.S=.o)))
+# Deduplicate: a source reaching OBJ twice becomes a multiple-definition link error.
+OBJ := $(sort $(OBJ))
+
+# The vendor SDK lives outside TOP, so give make somewhere to find it.
+vpath %.c $(sort $(dir $(SDK_SRC_C)))
+vpath %.S $(sort $(dir $(SDK_SRC_S)))
+
+# SDK objects go in their own subdirectory. This pattern has a shorter stem
+# than mkrules.mk's generic $(BUILD)/%.o, so make prefers it.
+$(BUILD)/sdk/%.o: %.c
+	$(Q)mkdir -p $(dir $@)
+	$(ECHO) "CC $<"
+	$(Q)$(CC) $(CFLAGS) -c -o $@ $<
+
+$(BUILD)/sdk/%.o: %.S
+	$(Q)mkdir -p $(dir $@)
+	$(ECHO) "AS $<"
+	$(Q)$(CC) $(CFLAGS) -c -o $@ $<
+
+all: $(BUILD)/firmware.elf
+
+$(BUILD)/firmware.elf: $(OBJ) $(LD_FILE)
+	$(ECHO) "LINK $@"
+	$(Q)$(CC) $(LDFLAGS) -o $@ $(OBJ) $(LIBS)
+	$(Q)$(SIZE) $@
+
+deploy: $(BUILD)/firmware.elf
+	bash ../../../scripts/flash.sh $(BUILD)/firmware.elf
+
+.PHONY: deploy
+
+include $(TOP)/py/mkrules.mk
