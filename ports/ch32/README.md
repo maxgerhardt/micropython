@@ -101,6 +101,21 @@ USBFS does **not** share pins with the SWD debug interface -- USBHS does
 PA9 and PA10 are OTG_VBUS and OTG_ID on this package and carry the UART REPL,
 so device-only USB leaves VBUS sensing and the ID pin unused.
 
+The 512 KB FAT volume is also exposed as a **USB mass-storage drive**, so the
+board enumerates as a composite CDC + MSC device.
+
+**There is no arbitration between the host and MicroPython.** Both may write,
+and a host that has cached FAT directory structures will overwrite changes it
+did not see -- a file written from MicroPython while the drive is mounted can
+simply vanish when the host next writes. This matches `ports/stm32` and
+`ports/rp2`; CircuitPython is the one that makes the volume exclusive to one
+side. In practice: do not write from both sides at once, and `os.sync()` and
+eject before switching.
+
+Expect the host to write to the volume unprompted -- Windows creates
+`System Volume Information`, and may add indexing and recycle-bin data. That is
+normal for any MSC device, not corruption.
+
 CH32H417 support for TinyUSB lives in a fork, `maxgerhardt/tinyusb` branch
 `ch32h417`, wired in as `lib/tinyusb`. Cloning therefore needs `--recursive`.
 
@@ -120,10 +135,10 @@ Two things that cost real time and are worth knowing:
 
 ## Measured
 
-    text 173864   data 3524   bss 30016     heap ~228 KB
+    text 176864   data 3524   bss 30596     heap ~228 KB
     core clock 400 MHz
 
-    benchmark  303 ms   (V3F baseline 4297 ms -> 14.2x)
+    benchmark  322 ms   (V3F baseline 4297 ms -> 13.3x)
     upstream tests: 470 passed / 0 failed (15270 testcases)
 
 See `docs/hw/benchmarks.md` for the layout comparison.
@@ -155,6 +170,6 @@ compiled from source with the same flags.
 
 ## Not yet implemented
 
-USB MSC, Ethernet, and the RV32 native emitter (which can be enabled
+Ethernet, and the RV32 native emitter (which can be enabled
 later targeting plain RV32IMC — the core is a superset, so no `xw` support is
 needed in the emitter).
