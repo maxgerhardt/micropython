@@ -19,6 +19,7 @@
 
 #include "uart.h"
 #include "flash.h"
+#include "usbd.h"
 #include "mphalport.h"
 
 #ifndef MICROPY_HW_ITCM_HOT_CODE
@@ -108,6 +109,7 @@ int main(void) {
 
     mp_hal_init();
     uart_init(MICROPY_HW_UART_REPL_BAUD);
+    ch32_usbd_init();
 
     // Leave a margin below the true stack top for the C stack itself.
     mp_stack_set_top((void *)&_eusrstack);

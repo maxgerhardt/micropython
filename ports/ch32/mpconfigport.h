@@ -47,6 +47,17 @@
 #define MICROPY_PY_TIME                 (1)
 #define MICROPY_PY_TIME_TICKS           (1)
 
+// USB device: CDC console on the USBFS controller (PA11/PA12).
+/* The USB stack defers work with mp_sched_schedule_node, which needs this. */
+#define MICROPY_ENABLE_SCHEDULER        (1)
+#define MICROPY_SCHEDULER_STATIC_NODES  (1)
+#define MICROPY_HW_ENABLE_USBDEV        (1)
+#define MICROPY_HW_USB_CDC              (1)
+#define MICROPY_HW_USB_VID              (0x1209)
+#define MICROPY_HW_USB_PID              (0x0001)
+#define MICROPY_HW_USB_MANUFACTURER_STRING "WCH"
+#define MICROPY_HW_USB_PRODUCT_FS_STRING   "CH32H417 MicroPython"
+
 // Filesystem: FAT on the internal flash tail. FAT rather than littlefs because
 // the volume is exposed over USB MSC later and hosts cannot read littlefs.
 #define MICROPY_VFS                     (1)

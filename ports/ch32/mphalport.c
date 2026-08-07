@@ -4,6 +4,12 @@
 #include "py/stream.h"
 #include "py/mphal.h"
 
+#ifndef MICROPY_HW_STDIN_BUFFER_LEN
+#define MICROPY_HW_STDIN_BUFFER_LEN 512
+#endif
+static uint8_t stdin_ringbuf_array[MICROPY_HW_STDIN_BUFFER_LEN];
+ringbuf_t stdin_ringbuf = { stdin_ringbuf_array, sizeof(stdin_ringbuf_array) };
+
 #include "uart.h"
 #include "mphalport.h"
 
@@ -92,8 +98,8 @@ mp_uint_t mp_hal_stdout_tx_strn(const char *str, size_t len) {
 
 int mp_hal_stdin_rx_chr(void) {
     for (;;) {
-        int c = uart_rx_chr();
-        if (c >= 0) {
+        int c = ringbuf_get(&stdin_ringbuf);
+        if (c != -1) {
             return c;
         }
         mp_event_handle_nowait();
@@ -102,7 +108,7 @@ int mp_hal_stdin_rx_chr(void) {
 
 uintptr_t mp_hal_stdio_poll(uintptr_t poll_flags) {
     uintptr_t ret = 0;
-    if ((poll_flags & MP_STREAM_POLL_RD) && uart_rx_any()) {
+    if ((poll_flags & MP_STREAM_POLL_RD) && ringbuf_peek(&stdin_ringbuf) != -1) {
         ret |= MP_STREAM_POLL_RD;
     }
     if (poll_flags & MP_STREAM_POLL_WR) {

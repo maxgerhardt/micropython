@@ -6,11 +6,10 @@
 
 /* Polled RX drops bytes whenever the VM is busy between reads, so the console
  * is served from an interrupt-filled ring buffer instead. */
-#define UART_RX_BUF_SIZE (256)   /* must be a power of two */
-
-static volatile uint8_t uart_rx_buf[UART_RX_BUF_SIZE];
-static volatile uint16_t uart_rx_head;
-static volatile uint16_t uart_rx_tail;
+/* The ISR feeds stdin_ringbuf, which the USB CDC layer also fills, so both
+ * consoles share one input queue. */
+#include "py/ringbuf.h"
+#include "mphalport.h"
 
 void uart_init(uint32_t baud) {
     GPIO_InitTypeDef gpio = {0};
@@ -46,7 +45,6 @@ void uart_init(uint32_t baud) {
     USART_Init(USART1, &usart);
     USART_Cmd(USART1, ENABLE);
 
-    uart_rx_head = uart_rx_tail = 0;
     USART_ITConfig(USART1, USART_IT_RXNE, ENABLE);
     NVIC_EnableIRQ(USART1_IRQn);
 }
@@ -60,16 +58,11 @@ void uart_tx_strn(const char *str, size_t len) {
 }
 
 bool uart_rx_any(void) {
-    return uart_rx_head != uart_rx_tail;
+    return ringbuf_peek(&stdin_ringbuf) != -1;
 }
 
 int uart_rx_chr(void) {
-    if (uart_rx_head == uart_rx_tail) {
-        return -1;
-    }
-    uint8_t c = uart_rx_buf[uart_rx_tail];
-    uart_rx_tail = (uart_rx_tail + 1) & (UART_RX_BUF_SIZE - 1);
-    return (int)c;
+    return ringbuf_get(&stdin_ringbuf);
 }
 
 void USART1_IRQHandler(void) __attribute__((interrupt("WCH-Interrupt-fast")));
@@ -81,10 +74,6 @@ void USART1_IRQHandler(void) {
             mp_sched_keyboard_interrupt();
             return;
         }
-        uint16_t next = (uart_rx_head + 1) & (UART_RX_BUF_SIZE - 1);
-        if (next != uart_rx_tail) {   /* silently drop on overflow */
-            uart_rx_buf[uart_rx_head] = c;
-            uart_rx_head = next;
-        }
+        ringbuf_put(&stdin_ringbuf, c);   /* drops silently when full */
     }
 }
