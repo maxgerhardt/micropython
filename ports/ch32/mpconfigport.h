@@ -33,9 +33,17 @@
 #define MICROPY_PY_BUILTINS_HELP        (1)
 #define MICROPY_PY_BUILTINS_HELP_MODULES (1)
 
-// The machine module arrives in a later task; enabling it requires the port
-// hooks (mp_machine_idle etc.) that modmachine.c will provide.
-#define MICROPY_PY_MACHINE              (0)
+#define MICROPY_PY_MACHINE              (1)
+#define MICROPY_PY_MACHINE_INCLUDEFILE  "ports/ch32/modmachine.c"
+#define MICROPY_PY_MACHINE_BARE_METAL_FUNCS (1)
+#define MICROPY_PY_MACHINE_RESET        (1)
+#define MICROPY_PY_MACHINE_MEMX         (1)
+#define MICROPY_PY_MACHINE_PULSE        (0)
+
+// time.sleep/ticks_* ride on the SysTick HAL via extmod's default bodies,
+// which call mp_hal_delay_ms/us and mp_hal_ticks_ms/us/cpu directly.
+#define MICROPY_PY_TIME                 (1)
+#define MICROPY_PY_TIME_TICKS           (1)
 
 // No filesystem yet: that arrives with littlefs in Milestone 3. MICROPY_PY_IO
 // defaults on at CORE_FEATURES and pulls in mp_builtin_open_obj, which has
