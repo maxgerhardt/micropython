@@ -1,0 +1,31 @@
+#ifndef MICROPY_INCLUDED_CH32_FLASH_H
+#define MICROPY_INCLUDED_CH32_FLASH_H
+
+#include <stdbool.h>
+#include <stddef.h>
+#include <stdint.h>
+
+/* The filesystem occupies the flash tail. These are ABSOLUTE addresses: the
+ * SDK flash driver validates against FLASH_BASE (0x08000000), so the 0x00000000
+ * alias used by the linker scripts must not be passed to it.
+ *
+ *   0x08000000   64K  V3F boot stub
+ *   0x08010000  384K  V5F MicroPython image
+ *   0x08070000  512K  FAT volume            <- this region
+ *   0x080F0000        ValidAddrEnd_Dual, end of the 960 KB user area
+ */
+#define CH32_FLASH_FS_BASE      (0x08070000u)
+#define CH32_FLASH_FS_SIZE      (0x80000u)
+#define CH32_FLASH_PAGE_SIZE    (0x2000u)     /* erase granularity at DBMODE=1 */
+#define CH32_FLASH_BLOCK_SIZE   (512u)        /* logical sector seen by FAT */
+#define CH32_FLASH_NUM_BLOCKS   (CH32_FLASH_FS_SIZE / CH32_FLASH_BLOCK_SIZE)
+
+/* Erased flash reads as this on the CH32H417, NOT 0xFFFFFFFF. */
+#define CH32_FLASH_ERASED_WORD  (0xE339E339u)
+
+bool ch32_flash_erase_page(uint32_t addr);
+bool ch32_flash_write(uint32_t addr, const void *src, size_t len);
+void ch32_flash_read(uint32_t addr, void *dst, size_t len);
+bool ch32_flash_page_is_erased(uint32_t addr);
+
+#endif // MICROPY_INCLUDED_CH32_FLASH_H

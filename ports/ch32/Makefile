@@ -50,7 +50,7 @@ CFLAGS += $(INC) $(ARCHFLAGS) $(CFLAGS_BOARD) \
 	-fsingle-precision-constant \
 	-DMICROPY_FLOAT_IMPL=MICROPY_FLOAT_IMPL_FLOAT \
 	-DMICROPY_HW_FPU=1 \
-	$(COPT)
+	$(COPT) $(CFLAGS_EXTRA)
 
 # mkrules.mk assembles .s files with "$(AS) $(AFLAGS)", which does not inherit
 # CFLAGS. Without the arch flags here the assembler emits a default-ABI object
@@ -65,6 +65,7 @@ LIBS += -lm
 SRC_C += \
 	main.c \
 	uart.c \
+	flash.c \
 	mphalport.c \
 	fault.c \
 	shared/readline/readline.c \
