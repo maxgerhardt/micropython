@@ -11,6 +11,9 @@
 #include "py/mperrno.h"
 #include "py/mphal.h"
 
+#include "extmod/vfs.h"
+#include "extmod/vfs_fat.h"
+
 #include "shared/runtime/gchelper.h"
 #include "shared/runtime/pyexec.h"
 
@@ -42,6 +45,38 @@ static void boot_delay(volatile uint32_t n) {
     }
 }
 #endif
+
+/* Mount the flash volume at "/", formatting it first if that fails, so a blank
+ * board comes up with a working filesystem without user action.
+ *
+ * mp_vfs_mount_and_chdir_protected catches exceptions itself and returns 0 on
+ * success, so only the mkfs call needs its own nlr guard. mkfs is a static
+ * method on the VfsFat type rather than a public C function, hence the
+ * attribute lookup. */
+static void init_filesystem(void) {
+    ch32_flashbdev_init();
+    mp_obj_t bdev = mp_call_function_0(MP_OBJ_FROM_PTR(&ch32_flash_type));
+    mp_obj_t mount_point = MP_OBJ_NEW_QSTR(MP_QSTR__slash_);
+
+    if (mp_vfs_mount_and_chdir_protected(bdev, mount_point) == 0) {
+        return;
+    }
+
+    mp_printf(&mp_plat_print, "MPY: formatting flash filesystem\n");
+    nlr_buf_t nlr;
+    if (nlr_push(&nlr) == 0) {
+        mp_obj_t mkfs = mp_load_attr(MP_OBJ_FROM_PTR(&mp_fat_vfs_type), MP_QSTR_mkfs);
+        mp_call_function_1(mkfs, bdev);
+        nlr_pop();
+    } else {
+        mp_printf(&mp_plat_print, "MPY: failed to create filesystem\n");
+        return;
+    }
+
+    if (mp_vfs_mount_and_chdir_protected(bdev, mount_point) != 0) {
+        mp_printf(&mp_plat_print, "MPY: failed to mount filesystem\n");
+    }
+}
 
 int main(void) {
     /* Attach window before touching clocks or peripherals. If firmware ever
@@ -128,6 +163,7 @@ int main(void) {
     for (;;) {
         gc_init(&_heap_start, &_heap_end);
         mp_init();
+        init_filesystem();
 
         mp_printf(&mp_plat_print, "MicroPython on %s\n", MICROPY_HW_BOARD_NAME);
         mp_printf(&mp_plat_print, "heap: %u bytes\n", (unsigned)heap_size);

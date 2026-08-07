@@ -63,8 +63,10 @@ void ch32_flashbdev_init(void) {
 
 /* FatFS timestamp callback. The board has an RTC but nothing sets it, so a
  * fixed date is more honest than a counter that restarts at every boot and
- * makes files appear to travel backwards in time. Wire this to the RTC once
- * there is a way to set the clock.
+ * makes files appear to travel backwards in time.
+ *
+ * Planned: once Ethernet lands, sync the RTC over NTP and return the real time
+ * from here. That is the point at which file timestamps become meaningful.
  *
  * FAT packing: bits 31:25 year-1980, 24:21 month, 20:16 day,
  *              15:11 hour, 10:5 minute, 4:0 seconds/2. */
