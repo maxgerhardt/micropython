@@ -61,6 +61,46 @@ void ch32_flashbdev_init(void) {
     cache_dirty = false;
 }
 
+bool ch32_flashbdev_read_blocks(uint8_t *dst, uint32_t block, uint32_t count) {
+    for (uint32_t i = 0; i < count; i++) {
+        uint32_t b = block + i;
+        if (b >= CH32_FLASH_NUM_BLOCKS) {
+            return false;
+        }
+        uint8_t *out = dst + i * CH32_FLASH_BLOCK_SIZE;
+        uint32_t page = b / BLOCKS_PER_PAGE;
+        if (page == cached_page && cache_dirty) {
+            /* Unflushed data lives only in RAM; serve it from there. */
+            memcpy(out, flash_cache + (b % BLOCKS_PER_PAGE) * CH32_FLASH_BLOCK_SIZE,
+                CH32_FLASH_BLOCK_SIZE);
+        } else {
+            ch32_flash_read(CH32_FLASH_FS_BASE + b * CH32_FLASH_BLOCK_SIZE,
+                out, CH32_FLASH_BLOCK_SIZE);
+        }
+    }
+    return true;
+}
+
+bool ch32_flashbdev_write_blocks(const uint8_t *src, uint32_t block, uint32_t count) {
+    for (uint32_t i = 0; i < count; i++) {
+        uint32_t b = block + i;
+        if (b >= CH32_FLASH_NUM_BLOCKS) {
+            return false;
+        }
+        if (!flash_cache_select(b / BLOCKS_PER_PAGE)) {
+            return false;
+        }
+        memcpy(flash_cache + (b % BLOCKS_PER_PAGE) * CH32_FLASH_BLOCK_SIZE,
+            src + i * CH32_FLASH_BLOCK_SIZE, CH32_FLASH_BLOCK_SIZE);
+        cache_dirty = true;
+    }
+    return true;
+}
+
+bool ch32_flashbdev_flush(void) {
+    return flash_cache_flush();
+}
+
 /* FatFS timestamp callback. The board has an RTC but nothing sets it, so a
  * fixed date is more honest than a counter that restarts at every boot and
  * makes files appear to travel backwards in time.
@@ -96,21 +136,9 @@ static mp_obj_t ch32_flash_readblocks(mp_obj_t self, mp_obj_t block_num, mp_obj_
     (void)self;
     mp_buffer_info_t bufinfo;
     mp_get_buffer_raise(buf, &bufinfo, MP_BUFFER_WRITE);
-    uint32_t block = mp_obj_get_int(block_num);
-    size_t nblocks = bufinfo.len / CH32_FLASH_BLOCK_SIZE;
-
-    for (size_t i = 0; i < nblocks; i++) {
-        uint32_t b = block + i;
-        uint8_t *dst = (uint8_t *)bufinfo.buf + i * CH32_FLASH_BLOCK_SIZE;
-        uint32_t page = b / BLOCKS_PER_PAGE;
-        if (page == cached_page && cache_dirty) {
-            /* Unflushed data lives only in RAM; serve it from there. */
-            memcpy(dst, flash_cache + (b % BLOCKS_PER_PAGE) * CH32_FLASH_BLOCK_SIZE,
-                CH32_FLASH_BLOCK_SIZE);
-        } else {
-            ch32_flash_read(CH32_FLASH_FS_BASE + b * CH32_FLASH_BLOCK_SIZE,
-                dst, CH32_FLASH_BLOCK_SIZE);
-        }
+    if (!ch32_flashbdev_read_blocks(bufinfo.buf, mp_obj_get_int(block_num),
+        bufinfo.len / CH32_FLASH_BLOCK_SIZE)) {
+        mp_raise_OSError(MP_EIO);
     }
     return MP_OBJ_NEW_SMALL_INT(0);
 }
@@ -120,21 +148,9 @@ static mp_obj_t ch32_flash_writeblocks(mp_obj_t self, mp_obj_t block_num, mp_obj
     (void)self;
     mp_buffer_info_t bufinfo;
     mp_get_buffer_raise(buf, &bufinfo, MP_BUFFER_READ);
-    uint32_t block = mp_obj_get_int(block_num);
-    size_t nblocks = bufinfo.len / CH32_FLASH_BLOCK_SIZE;
-
-    for (size_t i = 0; i < nblocks; i++) {
-        uint32_t b = block + i;
-        if (b >= CH32_FLASH_NUM_BLOCKS) {
-            mp_raise_OSError(MP_EINVAL);
-        }
-        if (!flash_cache_select(b / BLOCKS_PER_PAGE)) {
-            mp_raise_OSError(MP_EIO);
-        }
-        memcpy(flash_cache + (b % BLOCKS_PER_PAGE) * CH32_FLASH_BLOCK_SIZE,
-            (const uint8_t *)bufinfo.buf + i * CH32_FLASH_BLOCK_SIZE,
-            CH32_FLASH_BLOCK_SIZE);
-        cache_dirty = true;
+    if (!ch32_flashbdev_write_blocks(bufinfo.buf, mp_obj_get_int(block_num),
+        bufinfo.len / CH32_FLASH_BLOCK_SIZE)) {
+        mp_raise_OSError(MP_EIO);
     }
     return MP_OBJ_NEW_SMALL_INT(0);
 }
@@ -149,7 +165,7 @@ static mp_obj_t ch32_flash_ioctl(mp_obj_t self, mp_obj_t cmd_in, mp_obj_t arg_in
             return MP_OBJ_NEW_SMALL_INT(0);
         case MP_BLOCKDEV_IOCTL_DEINIT:
         case MP_BLOCKDEV_IOCTL_SYNC:
-            return MP_OBJ_NEW_SMALL_INT(flash_cache_flush() ? 0 : -1);
+            return MP_OBJ_NEW_SMALL_INT(ch32_flashbdev_flush() ? 0 : -1);
         case MP_BLOCKDEV_IOCTL_BLOCK_COUNT:
             return MP_OBJ_NEW_SMALL_INT(CH32_FLASH_NUM_BLOCKS);
         case MP_BLOCKDEV_IOCTL_BLOCK_SIZE:

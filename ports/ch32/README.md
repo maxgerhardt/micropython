@@ -88,12 +88,42 @@ verified by erasing and programming at `0x080EE000`.
 File timestamps are a fixed date: nothing sets the RTC yet. The plan is to
 sync it over NTP once Ethernet lands.
 
+## USB
+
+A USB CDC REPL runs on the **USBFS** controller, PA11 (OTG_DM) / PA12 (OTG_DP),
+alongside the UART one. Output goes to both consoles and input is accepted from
+either, so a USB problem never costs you the debug console. VID/PID are
+0x1209/0x0001 (pid.codes test IDs).
+
+USBFS does **not** share pins with the SWD debug interface -- USBHS does
+(PB8/PB9) -- so USB and debugging work together.
+
+PA9 and PA10 are OTG_VBUS and OTG_ID on this package and carry the UART REPL,
+so device-only USB leaves VBUS sensing and the ID pin unused.
+
+CH32H417 support for TinyUSB lives in a fork, `maxgerhardt/tinyusb` branch
+`ch32h417`, wired in as `lib/tinyusb`. Cloning therefore needs `--recursive`.
+
+Two things that cost real time and are worth knowing:
+
+- **The USBFS clock bits in `RCC_CFGR2` do not latch while the PLL they select
+  is stopped.** USBFS needs exactly 48 MHz and cannot get there from the 400 MHz
+  system PLL (dividers are 1,2,3,4,5,6,8,10 plus half-steps; 400/8.33 is not
+  reachable), so it sources the 480 MHz USBHS PLL divided by 10. That PLL must
+  be started *first* via `RCC_USBHS_PLLCmd()`, or the `CFGR2` writes silently
+  evaporate and the device never enumerates.
+- **The SDK's `USBFSD_TypeDef` is not layout-compatible with TinyUSB's endpoint
+  indexing**, despite identical field names. `UEPn_TX_LEN` is `uint8_t` where the
+  CH32V307's is `uint16_t`, halving the driver's endpoint stride, and `UEP3`
+  omits its `RESERVED` byte. The fork declares its own struct with static
+  asserts on the offsets.
+
 ## Measured
 
-    text 163464   data 3468   bss 26144     heap ~232 KB
+    text 173864   data 3524   bss 30016     heap ~228 KB
     core clock 400 MHz
 
-    benchmark  279 ms   (V3F baseline 4297 ms -> 15.4x)
+    benchmark  303 ms   (V3F baseline 4297 ms -> 14.2x)
     upstream tests: 470 passed / 0 failed (15270 testcases)
 
 See `docs/hw/benchmarks.md` for the layout comparison.
@@ -125,6 +155,6 @@ compiled from source with the same flags.
 
 ## Not yet implemented
 
-USB, Ethernet, and the RV32 native emitter (which can be enabled
+USB MSC, Ethernet, and the RV32 native emitter (which can be enabled
 later targeting plain RV32IMC — the core is a superset, so no `xw` support is
 needed in the emitter).

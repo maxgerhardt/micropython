@@ -33,4 +33,10 @@ bool ch32_flash_page_is_erased(uint32_t addr);
 extern const mp_obj_type_t ch32_flash_type;
 void ch32_flashbdev_init(void);
 
+/* Block access used by both the Python ch32.Flash type and the USB MSC
+ * callbacks, so the two paths cannot drift apart. All return true on success. */
+bool ch32_flashbdev_read_blocks(uint8_t *dst, uint32_t block, uint32_t count);
+bool ch32_flashbdev_write_blocks(const uint8_t *src, uint32_t block, uint32_t count);
+bool ch32_flashbdev_flush(void);
+
 #endif // MICROPY_INCLUDED_CH32_FLASH_H
