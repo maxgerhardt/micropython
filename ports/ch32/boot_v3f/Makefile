@@ -23,7 +23,7 @@ CFLAGS := $(ARCHFLAGS) -Os -g -std=gnu11 -fsingle-precision-constant \
 	-msmall-data-limit=8 -mno-save-restore \
 	-ffunction-sections -fdata-sections -Wall -Wno-comment \
 	-DCH32H417QE -DCH32H41X -DCH32H41x -DCH32H417 -DCore_V3F \
-	-DSYSCLK_400M_CoreCLK_V5F_400M_V3F_100M_HSI \
+	-DSYSCLK_400M_CoreCLK_V5F_400M_V3F_100M_HSE \
 	-DCH32_V5F_START_ADDR=$(CH32_V5F_FLASH_ORIGIN) \
 	$(INC)
 

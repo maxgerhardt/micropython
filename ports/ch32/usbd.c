@@ -27,12 +27,37 @@ void ch32_usbd_init(void) {
      * A wrong USB clock presents as a device that never enumerates rather than
      * as any kind of error, so if enumeration fails this is the first thing to
      * check -- read RCC->CFGR2 back over SWD. */
-    /* The USBHS PLL is off after reset (RCC_CTLR bit 20, RCC_USBHS_PLLON), so
-     * it must be configured and started before USBFS can select it. */
-    RCC_USBHSPLLCLKConfig(RCC_USBHSPLLSource_HSI);
+    /* Source the PLL from the 25 MHz crystal, not the internal RC. Full-speed
+     * USB requires a 0.25%-accurate clock; an on-chip RC oscillator is roughly
+     * an order of magnitude worse than that, so an HSI-derived USB clock only
+     * appears to work -- the SIE detects bus reset and suspend, which are DC
+     * conditions needing no clock, but never decodes a single packet. The board
+     * runs from HSE as well (see SYSCLK_..._HSE in mpconfigboard.mk), so the
+     * crystal is already running by the time this is reached.
+     *
+     * The USBHS PLL is off after reset (RCC_CTLR bit 20, RCC_USBHS_PLLON), so
+     * it must be configured and started before USBFS can select it.
+     *
+     * Do NOT call RCC_HSEConfig() here to "make sure" the crystal is on: it
+     * clears HSEON before setting it, and with the whole clock tree now derived
+     * from HSE that momentarily removes the reference from under the running
+     * system. The USBHS PLL does not recover from it and never reports lock. */
+    if (!(RCC->CTLR & RCC_HSERDY)) {
+        /* Booted on the internal RC after all; USB cannot meet spec from it, so
+         * leave USB down rather than enumerating a device that half works. */
+        return;
+    }
+
+    RCC_USBHSPLLCLKConfig(RCC_USBHSPLLSource_HSE);
     RCC_USBHSPLLReferConfig(RCC_USBHSPLLRefer_25M);
     RCC_USBHS_PLLCmd(ENABLE);
-    for (volatile uint32_t i = 0; i < 200000; i++) {
+
+    /* Wait for lock rather than spinning a fixed count: the USBFS clock mux
+     * below does not latch while its source PLL is stopped. */
+    for (volatile uint32_t i = 0; i < 2000000; i++) {
+        if (RCC->CTLR & RCC_USBHS_PLLRDY) {
+            break;
+        }
     }
 
     RCC_USBFSCLKConfig(RCC_USBFSCLKSource_USBHSPLL);
