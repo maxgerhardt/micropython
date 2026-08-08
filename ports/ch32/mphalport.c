@@ -96,9 +96,11 @@ void mp_hal_delay_ms(mp_uint_t ms) {
      * condition is already false on entry, so a scheduled callback would not
      * run until something else happened to poll -- by which time the code that
      * yielded has moved past the point where it expected the callback. */
-    do {
-        mp_event_handle_nowait();
-    } while (systick_ms < deadline);
+    mp_event_handle_nowait();
+    while (systick_ms < deadline) {
+        /* Sleeps the core between ticks instead of spinning on the counter. */
+        mp_event_wait_ms((mp_uint_t)(deadline - systick_ms));
+    }
 }
 
 mp_uint_t mp_hal_stdout_tx_strn(const char *str, size_t len) {
@@ -121,8 +123,19 @@ int mp_hal_stdin_rx_chr(void) {
         if (c != -1) {
             return c;
         }
-        mp_event_handle_nowait();
+        /* This is where a board spends nearly all of its time. Waiting rather
+         * than polling lets the core clock gate between interrupts; both
+         * consoles that fill the ring buffer are interrupt-driven, so there is
+         * nothing to poll for anyway. */
+        mp_event_wait_indefinite();
     }
+}
+
+/* MICROPY_INTERNAL_WFE. Plain WFI, not the SDK's STOP-mode helper: __WFI()
+ * clears the deep-sleep select bit first, so this gates the core clock without
+ * asking the SoC to stop anything the other core is still using. */
+void mp_hal_ch32_wfe(void) {
+    __WFI();
 }
 
 #if MICROPY_HW_ENABLE_USBDEV

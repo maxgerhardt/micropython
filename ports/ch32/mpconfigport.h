@@ -87,6 +87,17 @@
  * the event hook, and the host would eventually drop the connection. */
 void mp_hal_ch32_poll_usb(void);
 #define MICROPY_INTERNAL_EVENT_HOOK mp_hal_ch32_poll_usb()
+
+/* Idle by gating the core clock rather than spinning. Without this the core
+ * runs flat out whenever the REPL is waiting for a character, which is most of
+ * a board's life.
+ *
+ * The timeout is ignored on purpose: SysTick already interrupts every 1 ms, so
+ * a WFI cannot last longer than that. It bounds the classic wait-for-event
+ * race -- an event becoming ready between the check and the WFI costs at most
+ * 1 ms of extra latency instead of sleeping forever. */
+void mp_hal_ch32_wfe(void);
+#define MICROPY_INTERNAL_WFE(TIMEOUT_MS) mp_hal_ch32_wfe()
 /* The ISR does the time-critical USB work; tud_task() only drains deferred
  * events, so polling it every 16 bytecodes cost ~18%% on the benchmark for no
  * benefit. 256 keeps the host happy and the overhead unmeasurable. */

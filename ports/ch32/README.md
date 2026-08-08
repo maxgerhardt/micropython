@@ -190,6 +190,36 @@ Two things that cost real time and are worth knowing:
   omits its `RESERVED` byte. The fork declares its own struct with static
   asserts on the offsets.
 
+## Idle power
+
+Both cores gate their clock when idle rather than spinning.
+
+The **V3F** parks in the WFI inside `PWR_EnterSTOPMode()` immediately after
+waking the V5F, and stays there. It does not reach the loop after that call.
+
+The **V5F** waits in WFI whenever the REPL has no input, which is most of a
+board's life. This is what `MICROPY_INTERNAL_WFE` is for; before it was
+defined, `mp_hal_stdin_rx_chr()` polled `mp_event_handle_nowait()` in a tight
+loop and the core ran flat out at 400 MHz doing nothing. `time.sleep()` waits
+the same way instead of spinning on the tick counter.
+
+`__WFI()` clears the deep-sleep select bit before the instruction, so this
+gates the core clock only — it does not ask the SoC to stop anything the other
+core is still using.
+
+The timeout passed to `MICROPY_INTERNAL_WFE` is ignored deliberately. SysTick
+already interrupts every 1 ms, so no WFI lasts longer than that, which bounds
+the usual wait-for-event race: an event that becomes ready between the check
+and the WFI costs at most 1 ms of extra latency rather than a missed wakeup.
+
+To check a core really is asleep, halt it over SWD and read `pc` — the two
+targets are `wch_riscv.cpu.0` (V3F) and `wch_riscv.cpu.1` (V5F). A sleeping
+core reports the instruction *after* its `wfi`, and reports the same address
+every time; a busy one lands somewhere in `mp_execute_bytecode`.
+
+    openocd -f wch-dual-core.cfg -c init -c "targets wch_riscv.cpu.1" \
+            -c halt -c "reg pc" -c resume -c shutdown
+
 ## Measured
 
     text 185548   data 4324   bss 30748     heap ~228 KB

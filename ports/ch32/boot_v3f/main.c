@@ -66,8 +66,15 @@ int main(void) {
     RCC_HB1PeriphClockCmd(RCC_HB1Periph_PWR, ENABLE);
     PWR_EnterSTOPMode(PWR_Regulator_ON, PWR_STOPEntry_WFE);
 
-    /* Reached only if STOP mode returns; keep the core harmlessly parked. */
+    /* Not normally reached: the core parks in the WFI inside
+     * PWR_EnterSTOPMode() and stays there. Verified by halting
+     * wch_riscv.cpu.0 over SWD while MicroPython runs -- the V3F's PC reads
+     * 0x20100e82 every time, the instruction after that WFI.
+     *
+     * It is still reachable in principle, because that helper returns once a
+     * wake source fires, and a `nop` loop here would then spin the core at
+     * full clock forever. WFI costs nothing and cannot do that. */
     for (;;) {
-        __asm volatile ("nop");
+        __WFI();
     }
 }
