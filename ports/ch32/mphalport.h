@@ -63,6 +63,20 @@ const machine_pin_obj_t *machine_pin_get(mp_obj_t obj);
  * microsecond delay here -- it is already a bare SysTick read loop. */
 #define mp_hal_delay_us_fast mp_hal_delay_us
 
+/* A real critical section. py/mphal.h otherwise defaults these to a no-op,
+ * which would leave py/scheduler.c's queue unprotected against the USB
+ * interrupt that schedules onto it. Needs Machine mode -- see the mstatus
+ * comment in this port's startup_ch32h417_v5f.S. */
+uint32_t mp_hal_atomic_enter(void);
+void mp_hal_atomic_exit(uint32_t state);
+#define MICROPY_BEGIN_ATOMIC_SECTION() mp_hal_atomic_enter()
+#define MICROPY_END_ATOMIC_SECTION(state) mp_hal_atomic_exit(state)
+
+/* Timing guard bit-banged drivers (dht, onewire) wrap their critical section
+ * in. Just the atomic section here. */
+uint32_t mp_hal_quiet_timing_enter(void);
+void mp_hal_quiet_timing_exit(uint32_t state);
+
 // Provided by the SDK's system_ch32h417.c.
 extern uint32_t SystemCoreClock;
 

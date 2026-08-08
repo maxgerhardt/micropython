@@ -332,11 +332,6 @@ static void machine_i2c_init_pins(machine_i2c_obj_t *self) {
     GPIO_PinAFConfig(machine_pin_gpio(self->sda), self->sda & 0xf, self->af);
 }
 
-/* Lowest SCL the divider can express: CKCFGR's CCR field is 12 bits, so in
- * standard mode SCL >= SystemCoreClock / (2 * 4095), about 48.8 kHz at
- * 400 MHz. Requests below that are clamped; use SoftI2C for a slower bus. */
-#define I2C_CCR_MAX (4095)
-
 static void machine_i2c_init_periph(machine_i2c_obj_t *self, uint32_t freq) {
     machine_i2c_clock_enable(self->id);
     I2C_TypeDef *i2c = self->i2c;
@@ -349,51 +344,30 @@ static void machine_i2c_init_periph(machine_i2c_obj_t *self, uint32_t freq) {
     mp_hal_delay_us(10);
     i2c->CTLR1 &= (uint16_t) ~I2C_CTLR1_SWRST;
 
-    /* Deliberately not the SDK's I2C_Init(). That derives the divider from
-     * RCC's HCLK_Frequency, but this peripheral is fed by the system clock,
-     * and on this board HCLK is SYSCLK >> 2. Using the vendor path produced an
-     * SCL exactly 4.00x the requested rate -- measured at 50, 100, 200 and
-     * 400 kHz against an SSD1306 -- which is far outside the I2C spec even
-     * when a forgiving device happens to tolerate it. */
-    uint32_t pclk = SystemCoreClock;
+    /* The SDK's I2C_Init() derives the divider from RCC's HCLK_Frequency,
+     * which is the clock this peripheral actually runs on, so just use it.
+     *
+     * An earlier version of this file programmed CTLR2/CKCFGR/RTR by hand from
+     * SystemCoreClock, because the bus measured exactly 4.00x the requested
+     * rate. That reasoning was wrong. The measurement timed transfers with
+     * mp_hal_ticks_us(), and SysTick was itself configured from
+     * SystemCoreClock when it counts at HCLK, so the whole timebase read 4x
+     * short. "The peripheral runs at 4x HCLK" and "the clock measuring it runs
+     * 4x slow" fit that data equally well; timing a device-side sleep against
+     * a host stopwatch separated them, and it was the timebase. The moral:
+     * do not measure a clock with a clock derived from the same suspect
+     * source. */
+    I2C_InitTypeDef init = {0};
+    init.I2C_ClockSpeed = freq;
+    init.I2C_Mode = I2C_Mode_I2C;
+    init.I2C_DutyCycle = I2C_DutyCycle_2;
+    init.I2C_OwnAddress1 = 0;
+    init.I2C_Ack = I2C_Ack_Enable;
+    init.I2C_AcknowledgedAddress = I2C_AcknowledgedAddress_7bit;
 
-    i2c->CTLR1 &= (uint16_t) ~I2C_CTLR1_PE;
-
-    /* FREQ tells the peripheral its own input clock, for the internal filters
-     * and rise-time limit. The field tops out well below 400 MHz, so clamp it:
-     * that costs timing margin, not the wrong bus frequency, because SCL comes
-     * from CKCFGR below. */
-    uint32_t freqrange = pclk / 1000000u;
-    if (freqrange > 60) {
-        freqrange = 60;
-    }
-    i2c->CTLR2 = (uint16_t)freqrange;
-
-    uint32_t ccr;
-    if (freq <= 100000) {
-        ccr = pclk / (freq * 2);          /* SCL = pclk / (2 * CCR) */
-        if (ccr < 4) {
-            ccr = 4;
-        }
-        if (ccr > I2C_CCR_MAX) {
-            ccr = I2C_CCR_MAX;
-        }
-        i2c->CKCFGR = (uint16_t)ccr;
-        i2c->RTR = (uint16_t)(freqrange + 1);
-    } else {
-        ccr = pclk / (freq * 3);          /* fast mode, 2:1 duty */
-        if (ccr < 1) {
-            ccr = 1;
-        }
-        if (ccr > I2C_CCR_MAX) {
-            ccr = I2C_CCR_MAX;
-        }
-        i2c->CKCFGR = (uint16_t)(0x8000u | ccr);   /* F/S bit */
-        i2c->RTR = (uint16_t)(freqrange * 300u / 1000u + 1u);
-    }
-
-    i2c->OADDR1 = 0x4000;   /* bit 14 must read 1, per the reference manual */
-    i2c->CTLR1 = I2C_CTLR1_PE | I2C_CTLR1_ACK;
+    I2C_Cmd(i2c, DISABLE);
+    I2C_Init(i2c, &init);
+    I2C_Cmd(i2c, ENABLE);
 }
 
 static void machine_i2c_print(const mp_print_t *print, mp_obj_t self_in, mp_print_kind_t kind) {

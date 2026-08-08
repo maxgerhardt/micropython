@@ -100,13 +100,18 @@ level shifting. PB6/PB7 are also 5 V tolerant (FT in the pin table).
 I2C is open-drain and needs external pull-ups; the internal ones are far too
 weak. Most breakout modules already carry 4.7 k.
 
-**Do not use the vendor `I2C_Init()` here.** It derives the clock divider from
-RCC's `HCLK_Frequency`, but this peripheral is fed by the system clock, and
-HCLK is `SYSCLK >> 2` on this board — so the bus ran at exactly 4.00x the
-requested rate (measured at 50/100/200/400 kHz). `machine_i2c.c` programs
-`CTLR2`/`CKCFGR`/`RTR` directly from `SystemCoreClock` instead, which measures
-1.00x. `CCR` is 12 bits, so the slowest standard-mode bus is about 49 kHz; use
-`SoftI2C` below that.
+The clock divider comes from the vendor `I2C_Init()`, which derives it from
+`HCLK_Frequency` — the clock this peripheral really runs on.
+
+An earlier version of this port replaced that with hand-written register setup
+driven by `SystemCoreClock`, because the bus measured exactly 4.00x the
+requested rate. **That was wrong**, and the mistake is worth remembering: the
+measurement timed transfers with `mp_hal_ticks_us()`, and SysTick was itself
+misconfigured from `SystemCoreClock` when it counts at HCLK, so the whole
+timebase read 4x short. "The peripheral runs at 4x HCLK" and "the clock
+measuring it runs 4x slow" fit that data equally well. Timing a device-side
+`sleep_ms()` against a host stopwatch separated them — see "Timebase" below.
+Do not measure a clock with a clock derived from the same suspect source.
 
 Creating a `SoftI2C` on PB6/PB7 reconfigures those pins to plain GPIO, which
 disconnects the hardware peripheral. Re-create the `I2C` object to take them
@@ -115,6 +120,34 @@ back.
 `test_i2c.py` verifies all of this against an SSD1306 OLED, and skips when
 nothing is attached. `framebuf` is enabled, so micropython-lib's display
 drivers work as-is.
+
+## ADC
+
+    from machine import ADC, Pin
+    a = ADC(Pin.cpu.PA7)
+    a.read_u16()     # 0-65535, full scale
+    a.read_uv()      # microvolts, referenced to the 3.3 V rail
+
+ADC1, one conversion on demand, 12 bits. Channels are PA0-PA7 (IN0-IN7),
+PB0-PB1 (IN8-IN9) and PC0-PC5 (IN10-IN15); any other pin raises `ValueError`.
+The converter is calibrated once at first use, and the longest sample window is
+always used, since the source impedance of whatever is attached is unknown and
+a short window reads low on a high-impedance source.
+
+`read_u16()` replicates the top bits rather than shifting in zeros, so full
+scale really is 65535 rather than 65520.
+
+Verified with an MCP4725 DAC on I2C1 whose output feeds PA7, so the two
+peripherals check each other — see `test_adc.py`. Across the full range the
+two agree to within **4 mV**:
+
+| DAC code | expected | measured |
+|---|---|---|
+| 0 | 0 mV | 0 mV |
+| 1024 | 825 mV | 825 mV |
+| 2048 | 1650 mV | 1653 mV |
+| 3072 | 2475 mV | 2479 mV |
+| 4095 | 3300 mV | 3298 mV |
 
 ## Memory layout
 
@@ -158,8 +191,10 @@ on eject, and a debugger reset gives firmware no notice at all. Writes commit
 eagerly now for that last reason above all — nothing the firmware can do
 covers an OpenOCD reset.
 
-The cost is write amplification. A 512-byte sector write is ~5.5 ms and bulk
-writes plateau near 87 KB/s. The volume is formatted with 512-byte clusters,
+The cost is write amplification. A 512-byte sector write is ~22 ms and bulk
+writes plateau near 22 KB/s. (Those were recorded as 5.5 ms and 87 KB/s before
+the SysTick fix described under "Timebase" — the board was timing itself with a
+clock that ran 4x slow.) The volume is formatted with 512-byte clusters,
 which stops FatFS batching, since it clamps multi-sector writes at the cluster
 boundary; formatting with 8 KB clusters would recover most of the throughput
 at a cost of 8 KB per file on a 505 KB volume. Rewrites of identical content
@@ -261,18 +296,52 @@ every time; a busy one lands somewhere in `mp_execute_bytecode`.
     openocd -f wch-dual-core.cfg -c init -c "targets wch_riscv.cpu.1" \
             -c halt -c "reg pc" -c resume -c shutdown
 
+## Timebase
+
+SysTick counts at **HCLK**, which on this board is `SYSCLK >> 2` = 100 MHz —
+*not* `SystemCoreClock`, which is the V5F core clock at 400 MHz. `mp_hal_init()`
+configures the counter from `RCC_GetClocksFreq()`'s `HCLK_Frequency` for that
+reason.
+
+This was wrong for a long time, and it mattered more than it looks. Every tick
+was worth four times what the rest of the port assumed, so:
+
+- `time.sleep_ms(2000)` actually slept eight seconds.
+- `time.ticks_ms()` / `ticks_us()` ran at a quarter speed.
+- `time_pulse_us()` read 4x short, so every bit-banged protocol misjudged its
+  timing. A DHT11 decoded as 40 zero bits, because a 70 us high measured as
+  17 us and fell under the 48 us threshold separating a one from a zero.
+- Anything the board measured about itself — bus speeds, benchmarks, flash
+  throughput — was 4x optimistic.
+
+The bug is invisible to any self-consistent test: `sleep_ms(100)` measured with
+the same broken clock still reports 100 ms. It took an external reference to
+see it. **To check the timebase, time a device-side sleep against the host:**
+
+    t0 = time.monotonic()
+    pyb.exec_("import time; time.sleep_ms(2000)")
+    print((time.monotonic() - t0) * 1000)     # must be ~2000, was ~8000
+
 ## Measured
 
     text 196856   data 4388   bss 30812     heap ~228 KB
     core clock 400 MHz
 
-    benchmark  ~320 ms  (V3F baseline 4297 ms -> 13.3x)
+    benchmark  ~1050 ms
     upstream tests: 623 passed / 0 failed (22002 testcases)
 
-The benchmark moves around by ±10% between runs depending on what the USB host
-is doing to the MSC volume, so treat differences smaller than that as noise —
-measure a suspected regression against a control build in the same session
-rather than against a number recorded earlier.
+The benchmark times itself on the target with `ticks_ms()`, so every figure
+recorded before the SysTick fix was 4x too fast — the "~320 ms" this file used
+to quote was really ~1280 ms. The old "13.3x faster than the V3F" claim came
+from comparing a 4x-inflated V5F number against a V3F baseline whose clock was
+correct (there `SystemCoreClock` and HCLK are both 100 MHz, so the bug did not
+bite). **That ratio needs re-measuring before it is quoted again**; on these
+numbers it looks closer to 4x.
+
+The benchmark also moves by ±10% between runs depending on what the USB host is
+doing to the MSC volume, so treat smaller differences as noise — measure a
+suspected regression against a control build in the same session rather than
+against a number recorded earlier.
 
 See `docs/hw/benchmarks.md` for the layout comparison.
 

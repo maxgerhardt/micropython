@@ -54,15 +54,26 @@
 #define MICROPY_PY_MACHINE              (1)
 #define MICROPY_PY_MACHINE_INCLUDEFILE  "ports/ch32/modmachine.c"
 #define MICROPY_PY_MACHINE_BARE_METAL_FUNCS (1)
+/* Real now that the port runs in Machine mode; in User mode the underlying
+ * atomic section was a no-op and these would have lied. */
+#define MICROPY_PY_MACHINE_DISABLE_IRQ_ENABLE_IRQ (1)
 #define MICROPY_PY_MACHINE_RESET        (1)
 #define MICROPY_PY_MACHINE_MEMX         (1)
-#define MICROPY_PY_MACHINE_PULSE        (0)
+/* time_pulse_us(), and the C bit-banger in drivers/dht/dht.c that builds on
+ * it. Both need the microsecond timebase to survive a critical section. */
+#define MICROPY_PY_MACHINE_PULSE        (1)
 
 /* I2C. The hardware peripheral lives in ports/ch32/machine_i2c.c; SoftI2C
  * comes from extmod and bit-bangs any two pins, which is the fallback for the
  * pin pairs the I2C mux cannot reach. */
 #define MICROPY_PY_MACHINE_I2C          (1)
 #define MICROPY_PY_MACHINE_SOFTI2C      (1)
+
+/* ADC1, single conversion on demand. read_uv() is exposed because the raw
+ * 16-bit reading is meaningless without knowing the reference. */
+#define MICROPY_PY_MACHINE_ADC          (1)
+#define MICROPY_PY_MACHINE_ADC_INCLUDEFILE "ports/ch32/machine_adc.c"
+#define MICROPY_PY_MACHINE_ADC_READ_UV  (1)
 
 /* framebuf is what every display driver in micropython-lib builds on -- an
  * SSD1306 is unusable without it -- and it also lets the upstream suite run

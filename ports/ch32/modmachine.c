@@ -58,5 +58,10 @@ static mp_int_t mp_machine_reset_cause(void) {
     return 0;
 }
 
+/* micropython-lib's dht.py looks for machine.dht_readinto first, so exposing
+ * it here is what makes the stock DHT11/DHT22 driver work unmodified. */
+#include "drivers/dht/dht.h"
+
 #define MICROPY_PY_MACHINE_EXTRA_GLOBALS \
-    { MP_ROM_QSTR(MP_QSTR_Pin), MP_ROM_PTR(&machine_pin_type) },
+    { MP_ROM_QSTR(MP_QSTR_Pin), MP_ROM_PTR(&machine_pin_type) }, \
+    { MP_ROM_QSTR(MP_QSTR_dht_readinto), MP_ROM_PTR(&dht_readinto_obj) },

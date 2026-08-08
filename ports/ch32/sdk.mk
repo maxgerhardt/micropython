@@ -23,6 +23,7 @@ SDK_SRC_C := \
 	$(SDK)/Peripheral/ch32h417/src/ch32h417_rcc.c \
 	$(SDK)/Peripheral/ch32h417/src/ch32h417_gpio.c \
 	$(SDK)/Peripheral/ch32h417/src/ch32h417_i2c.c \
+	$(SDK)/Peripheral/ch32h417/src/ch32h417_adc.c \
 	$(SDK)/Peripheral/ch32h417/src/ch32h417_usart.c \
 	$(SDK)/Peripheral/ch32h417/src/ch32h417_flash.c \
 	$(SDK)/Peripheral/ch32h417/src/ch32h417_pwr.c \
@@ -31,4 +32,8 @@ SDK_SRC_C := \
 # Drop any that do not exist in this SDK revision.
 SDK_SRC_C := $(wildcard $(SDK_SRC_C))
 
-SDK_SRC_S := $(SDK)/Startup/$(CH32_STARTUP)
+# Startup: use the port's copy when there is one, otherwise the SDK's. The V5F
+# file is vendored here because it has to enter main() in Machine mode rather
+# than the User mode WCH's stock version selects -- see the comment on mstatus
+# inside it.
+SDK_SRC_S := $(if $(wildcard $(CH32_STARTUP)),$(CH32_STARTUP),$(SDK)/Startup/$(CH32_STARTUP))
