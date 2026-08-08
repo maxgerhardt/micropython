@@ -11,6 +11,9 @@
 #include "py/runtime.h"
 
 #include "tusb.h"
+/* For the mp_usbd_port_get_serial_number() prototype: including it means a
+ * signature mismatch is a compile error rather than a silent ABI accident. */
+#include "shared/tinyusb/mp_usbd.h"
 
 #include "usbd.h"
 
@@ -130,13 +133,21 @@ void USBFS_IRQHandler(void) {
 }
 
 /* TinyUSB asks the port for the serial number string. The chip's 96-bit unique
- * ID is at 0x1FFFF7E8, the same location machine.unique_id() reads. */
-size_t mp_usbd_port_get_serial_number(uint8_t *buf) {
+ * ID is at 0x1FFFF7E8, the same location machine.unique_id() reads.
+ *
+ * The buffer is an uninitialised stack array and the caller walks it looking
+ * for a NUL, up to MICROPY_HW_USB_DESC_STR_MAX. Terminating it is therefore not
+ * optional: without the NUL the serial string picks up whatever stack garbage
+ * follows, and the resulting string descriptor is malformed in a way that
+ * depends on the caller's stack contents. That fails enumeration *after* the
+ * device descriptor has been read successfully, and only for some builds -- an
+ * unpleasant thing to chase, so it is spelled out here. */
+void mp_usbd_port_get_serial_number(char *buf) {
     const uint8_t *id = (const uint8_t *)0x1FFFF7E8;
     static const char hex[] = "0123456789ABCDEF";
     for (int i = 0; i < 12; i++) {
         buf[i * 2] = hex[id[i] >> 4];
         buf[i * 2 + 1] = hex[id[i] & 0xf];
     }
-    return 24;
+    buf[24] = '\0';
 }
