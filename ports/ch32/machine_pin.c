@@ -115,19 +115,30 @@ static uint32_t pin_cfg_get(const machine_pin_obj_t *self) {
     return (reg >> ((num & 7) * 4)) & 0xf;
 }
 
-static bool pin_is_output(const machine_pin_obj_t *self) {
-    /* The low two bits of the nibble are MODE; zero means input. */
-    return (pin_cfg_get(self) & 3) != 0;
+/* Whether reading the pin should report the output latch rather than the pad.
+ *
+ * Only a push-pull output may. An open-drain pin is an output too, but the
+ * entire point of it is that another device can hold the line low while this
+ * one's latch still says 1 -- reading the latch there reports what we asked
+ * for instead of what the wire is doing, which silently breaks every
+ * open-drain protocol. It broke SoftI2C: the bit-banger read back its own
+ * released SDA as 1 and so never saw a slave acknowledge. Alternate-function
+ * and analog pins are not ours to report a latch for either. */
+static bool pin_reads_latch(const machine_pin_obj_t *self) {
+    uint32_t cfg = pin_cfg_get(self);
+    return (cfg & 3) != 0 && (cfg >> 2) == 0;
 }
 
 int machine_pin_read(const machine_pin_obj_t *self) {
     GPIO_TypeDef *gpio = machine_pin_gpio(self->id);
     uint16_t mask = MACHINE_PIN_MASK(self->id);
-    /* Read the output latch for a driven pin so on()/off() read back, and the
-     * input register otherwise. Testing OUTDR first would be wrong: for an
-     * input with a pull-up the latch is what selects the pull direction, so it
-     * reads 1 no matter what the pin is actually sitting at. */
-    if (pin_is_output(self)) {
+    /* Read the output latch only for a push-pull output, so on()/off() read
+     * back; everything else reports the pad. Testing OUTDR first would be
+     * wrong twice over: for an input with a pull-up the latch is what selects
+     * the pull direction, so it reads 1 whatever the pin is sitting at, and
+     * for an open-drain output the latch is what we released, not what the bus
+     * is doing. */
+    if (pin_reads_latch(self)) {
         return (gpio->OUTDR & mask) ? 1 : 0;
     }
     return (gpio->INDR & mask) ? 1 : 0;

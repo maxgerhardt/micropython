@@ -117,6 +117,21 @@ time.sleep_ms(2)
 check("od released", B.value(), 1)
 check("od mode readback", A.mode(), Pin.OPEN_DRAIN)
 
+# An open-drain pin must report the *line*, not its own latch. Release A high
+# and have B pull the shared wire down: A is not driving, so this is not
+# contention, and A must read the 0 that B is imposing. Reading the latch here
+# would report 1 and silently break every open-drain protocol -- it broke
+# SoftI2C, which read back its own released SDA and never saw an ACK.
+park()
+A.init(Pin.OPEN_DRAIN)
+A.on()                      # released
+B.init(Pin.OUT, value=0)    # B pulls the shared line low
+time.sleep_ms(2)
+check("od reads line not latch", A.value(), 0)
+B.init(Pin.IN)              # release before A drives again
+A.off()
+check("od drives low", A.value(), 0)
+
 # --- mode and drive readback ---
 park()
 A.init(Pin.OUT)
