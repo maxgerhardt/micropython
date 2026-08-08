@@ -8,6 +8,22 @@
 // Feature level: everything the REPL needs, nothing more, for Milestone 1.
 #define MICROPY_CONFIG_ROM_LEVEL        (MICROPY_CONFIG_ROM_LEVEL_CORE_FEATURES)
 
+// f-strings default to EXTRA_FEATURES, but they are ordinary Python syntax now
+// rather than a luxury: micropython-lib's unittest uses them, and the upstream
+// test suite requires unittest, so without this a large part of tests/ cannot
+// run at all. Enabled on its own rather than raising the whole ROM level.
+#define MICROPY_PY_FSTRINGS             (1)
+
+// Likewise memoryview and slice assignment. Both also default to
+// EXTRA_FEATURES, and without them the upstream suite fails tests that it does
+// not know to skip (extmod/vfs_fat_ramdisklarge, misc/non_compliant,
+// micropython/heapalloc_slice). memoryview in particular is what lets code
+// pass a window onto a buffer around without copying, which is the normal way
+// to do zero-copy I/O on a board with this little RAM.
+#define MICROPY_PY_BUILTINS_MEMORYVIEW  (1)
+#define MICROPY_PY_ARRAY_SLICE_ASSIGN   (1)
+#define MICROPY_PY_BUILTINS_BYTES_HEX   (1)
+
 #define MICROPY_ALLOC_PATH_MAX          (256)
 #define MICROPY_ENABLE_GC               (1)
 #define MICROPY_ENABLE_PYSTACK          (0)

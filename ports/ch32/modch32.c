@@ -19,6 +19,7 @@ static mp_obj_t ch32_usb_stat(void) {
     return mp_obj_new_tuple(5, t);
 }
 static MP_DEFINE_CONST_FUN_OBJ_0(ch32_usb_stat_obj, ch32_usb_stat);
+
 #endif
 
 static const mp_rom_map_elem_t ch32_module_globals_table[] = {
