@@ -196,6 +196,11 @@ A.on()
 check("hard irq", counter[0], 1)
 B.irq(None)
 
+# Re-park and re-drive low: the phase above leaves PB0 high, and starting this
+# one from an already-high pin would silently cost the rising edge.
+park()
+A.init(Pin.OUT, value=0)
+B.init(Pin.IN)
 hits3 = []
 B.irq(lambda p: hits3.append(1), Pin.IRQ_RISING | Pin.IRQ_FALLING)
 A.on()

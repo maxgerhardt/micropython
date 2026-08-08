@@ -1,13 +1,37 @@
 /* FAT block device over the internal flash tail.
  *
- * FAT writes 512-byte sectors but the flash erase unit is 8 KB, so a naive
- * implementation would erase and reprogram 8 KB for every sector write: 16x
- * write amplification, and FAT rewrites its allocation table constantly. A
- * single write-back page cache turns a run of sequential sector writes into
- * one erase per 8 KB page.
+ * FAT writes 512-byte sectors but the flash erase unit is 8 KB, so a sector
+ * write is unavoidably read-modify-erase-program of a whole page. The page
+ * buffer below exists for that, and it coalesces a run of sectors within one
+ * write_blocks() call into a single erase.
  *
- * Reads bypass the cache entirely -- flash is memory-mapped -- except for the
- * page currently held dirty, which must be served from RAM to stay coherent. */
+ * It is deliberately NOT a write-back cache. Dirty data never survives the
+ * call that produced it: write_blocks() flushes before returning, so once any
+ * block-device operation completes, flash matches what the filesystem thinks
+ * it wrote.
+ *
+ * That costs write throughput, and it was originally written the other way --
+ * holding a page dirty until something asked for a sync. Three things made
+ * that untenable on this board:
+ *
+ *  - ch32_flashbdev_init() runs on every mount, including the remount after a
+ *    soft reset, and simply dropped whatever was still dirty. run-tests.py
+ *    soft-resets between tests, so a test that wrote to the filesystem could
+ *    leave FAT half-updated. This is what corrupted the volume in practice.
+ *  - USB MSC only flushed on eject or PREVENT_ALLOW_MEDIUM_REMOVAL. A host
+ *    that wrote and never ejected left the data in RAM indefinitely.
+ *  - A debugger reset (OpenOCD/wlink), which is how this board is reset all
+ *    day, gives firmware no notice whatsoever. No amount of flushing at
+ *    firmware-visible exit points can cover it.
+ *
+ * The residual window is inherent to NOR flash without a journal: a reset
+ * between the erase and the reprogram leaves that one 8 KB page erased. It
+ * cannot be closed without a log-structured format, and FAT is required here
+ * because the volume is exposed over USB MSC.
+ *
+ * Reads bypass the buffer -- flash is memory-mapped -- except for a page held
+ * dirty, which cannot happen between calls any more but is still handled so
+ * that reads stay correct if deferred flushing is ever reintroduced. */
 #include <string.h>
 
 #include "py/runtime.h"
@@ -33,6 +57,15 @@ static bool flash_cache_flush(void) {
         return true;
     }
     uint32_t addr = page_addr(cached_page);
+    /* Skip a rewrite that would change nothing. Flushing on every write makes
+     * repeated writes of identical content common -- FAT rewrites its
+     * allocation table and directory entries constantly -- and comparing 8 KB
+     * of memory-mapped flash costs far less than an erase, in time and in
+     * flash life. */
+    if (memcmp((const void *)addr, flash_cache, CH32_FLASH_PAGE_SIZE) == 0) {
+        cache_dirty = false;
+        return true;
+    }
     if (!ch32_flash_erase_page(addr)) {
         return false;
     }
@@ -57,6 +90,10 @@ static bool flash_cache_select(uint32_t page) {
 }
 
 void ch32_flashbdev_init(void) {
+    /* Flush rather than discard. Nothing should be dirty here now that every
+     * write flushes, but dropping staged data on a mount is precisely the bug
+     * that used to corrupt the volume, so do not reintroduce it by assuming. */
+    flash_cache_flush();
     cached_page = PAGE_NONE;
     cache_dirty = false;
 }
@@ -94,7 +131,9 @@ bool ch32_flashbdev_write_blocks(const uint8_t *src, uint32_t block, uint32_t co
             src + i * CH32_FLASH_BLOCK_SIZE, CH32_FLASH_BLOCK_SIZE);
         cache_dirty = true;
     }
-    return true;
+    /* Commit before returning: no caller is required to sync, and the resets
+     * that matter on this board cannot be intercepted. */
+    return flash_cache_flush();
 }
 
 bool ch32_flashbdev_flush(void) {
