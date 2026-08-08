@@ -91,9 +91,14 @@ void mp_hal_delay_us(mp_uint_t us) {
 
 void mp_hal_delay_ms(mp_uint_t ms) {
     uint64_t deadline = systick_ms + ms;
-    while (systick_ms < deadline) {
+    /* Handle events at least once, even for a zero delay. time.sleep(0) is the
+     * documented way to yield to the scheduler, and with a plain while loop the
+     * condition is already false on entry, so a scheduled callback would not
+     * run until something else happened to poll -- by which time the code that
+     * yielded has moved past the point where it expected the callback. */
+    do {
         mp_event_handle_nowait();
-    }
+    } while (systick_ms < deadline);
 }
 
 mp_uint_t mp_hal_stdout_tx_strn(const char *str, size_t len) {

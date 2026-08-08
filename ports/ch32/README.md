@@ -192,11 +192,16 @@ Two things that cost real time and are worth knowing:
 
 ## Measured
 
-    text 176864   data 3524   bss 30596     heap ~228 KB
+    text 185548   data 4324   bss 30748     heap ~228 KB
     core clock 400 MHz
 
-    benchmark  322 ms   (V3F baseline 4297 ms -> 13.3x)
-    upstream tests: 470 passed / 0 failed (15270 testcases)
+    benchmark  ~320 ms  (V3F baseline 4297 ms -> 13.3x)
+    upstream tests: 611 passed / 0 failed (20134 testcases)
+
+The benchmark moves around by ±10% between runs depending on what the USB host
+is doing to the MSC volume, so treat differences smaller than that as noise —
+measure a suspected regression against a control build in the same session
+rather than against a number recorded earlier.
 
 See `docs/hw/benchmarks.md` for the layout comparison.
 

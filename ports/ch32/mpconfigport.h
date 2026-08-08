@@ -108,6 +108,11 @@ void mp_hal_ch32_poll_usb(void);
 #define MICROPY_PY_SYS_STDFILES         (1)
 #define MICROPY_READER_VFS              (1)
 #define MICROPY_ENABLE_EXTERNAL_IMPORT  (1)
+/* Import precompiled .mpy files. Without this the importer only ever looks for
+ * .py, so a board cannot run code cross-compiled with mpy-cross -- and the
+ * upstream suite's extmod/vfs_userfs test, which imports a deliberately
+ * malformed .mpy to check the file is closed on error, fails outright. */
+#define MICROPY_PERSISTENT_CODE_LOAD    (1)
 #define MICROPY_FATFS_ENABLE_LFN        (1)
 /* Token-pasted into a table name by ffunicode.c, so it must be a bare
  * number: parentheses here produce "pasting uc and ( is invalid". */
