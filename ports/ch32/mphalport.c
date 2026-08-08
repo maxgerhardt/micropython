@@ -72,22 +72,48 @@ void mp_hal_init(void) {
 // Read the millisecond counter and the sub-millisecond remainder atomically
 // with respect to the SysTick interrupt: if the ms counter moved while we were
 // reading CNT, take the sample again.
-/* Fold a completed-but-unserviced tick into the millisecond counter.
+/* Fold completed-but-unserviced ticks into the millisecond counter.
  *
- * The overflow flag lives in hardware, so reading it directly means the
- * timebase does not depend on the interrupt having been taken -- which is what
- * lets mp_hal_ticks_us() stay monotonic while interrupts are disabled.
- * Clearing the flag also cancels the pending interrupt, so the handler cannot
- * count the same tick again; the interrupt lock is what makes that
- * test-and-clear indivisible with respect to the handler.
+ * This exists so the timebase does not depend on the interrupt having been
+ * taken. Inside a critical section the handler cannot run, CNT keeps wrapping,
+ * and without this the microsecond clock would stall -- so mp_hal_delay_us()
+ * would never reach its deadline and time_pulse_us() would misread every
+ * pulse. A DHT11 frame masks interrupts for about 4 ms, four wraps.
  *
- * This catches one tick per call, and callers poll far more often than once
- * per millisecond, so nothing is lost in practice. A stretch with interrupts
- * off and no calls at all still loses time, exactly as it would anyway. */
+ * The subtlety, and a bug this port shipped: clearing the overflow flag does
+ * NOT cancel the interrupt it already requested. The flag asserting is what
+ * makes NVIC latch "pending", and it latches whether or not interrupts are
+ * currently masked. Clearing the flag afterwards leaves that latched bit
+ * alone, so the handler still runs and counts the same tick a second time.
+ *
+ * That double-count scaled with how hard the clock was polled, since the race
+ * is whether this function reaches the flag before the handler does. A Python
+ * loop calling ticks_us() every ~20 us ran 3% fast, which reads as jitter; a C
+ * loop polling every ~0.1 us -- mp_hal_delay_us(), time_pulse_us(), the SPI
+ * transfer loop -- won nearly every time and ran up to 25% fast.
+ * time.sleep_us(5000) returned after 4060 us.
+ *
+ * The fix is to cancel the pending interrupt as well, so exactly one of this
+ * function and the handler ever accounts for a given tick. Both halves are
+ * needed: an earlier attempt at a purely read-only reconstruction fixed the
+ * double-count but could only ever account for one outstanding tick, which
+ * stalled the clock inside any critical section longer than a millisecond and
+ * stopped DHT decoding entirely.
+ *
+ * This recovers at most one tick per call, because the overflow flag is a
+ * single bit -- a second wrap while it is already set is not queued anywhere.
+ * That is enough because callers poll far more often than once per
+ * millisecond: a 20 ms window with interrupts masked, spinning on
+ * mp_hal_ticks_us(), measures 20008 us. A masked stretch that never polls at
+ * all still loses everything past the first tick, and no arrangement of this
+ * function can change that. */
 static void systick_catch_up(void) {
     uint32_t state = mp_hal_atomic_enter();
     if (SysTick0->ISR & (1u << 0)) {
         SysTick0->ISR &= ~(1u << 0);
+        /* Cancel the interrupt this tick already requested, or the handler
+         * counts it again as soon as interrupts come back on. */
+        NVIC_ClearPendingIRQ(SysTick0_IRQn);
         systick_ms++;
     }
     mp_hal_atomic_exit(state);
@@ -197,13 +223,11 @@ void mp_hal_atomic_exit(uint32_t state) {
 
 /* Timing guard for bit-banged drivers (dht, onewire): a plain interrupt lock.
  *
- * That is only safe because ticks_us64() reconstructs missed ticks from
- * SysTick's hardware overflow flag instead of trusting the handler to have
- * run. Without that, masking SysTick would freeze the millisecond half of the
- * timebase while the counter kept wrapping underneath, so the microsecond
- * clock would sawtooth once per millisecond -- and time_pulse_us(), which
- * compares against a start value it took microseconds earlier, would see its
- * unsigned difference underflow into a spurious timeout. */
+ * That is only safe because ticks_us64() folds SysTick's hardware overflow
+ * flag into its result instead of trusting the handler to have run. Without
+ * that, masking SysTick would freeze the millisecond half of the timebase
+ * while the counter kept wrapping underneath, so the microsecond clock would
+ * sawtooth once per millisecond. */
 uint32_t mp_hal_quiet_timing_enter(void) {
     return mp_hal_atomic_enter();
 }
