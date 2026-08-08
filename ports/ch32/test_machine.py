@@ -16,7 +16,7 @@ with ReplSession() as s:
     s.expect(r">>>", timeout=5.0)
     s.eval("p.on(); p.value()", r"\n1\r?\n")
     s.eval("p.off(); p.value()", r"\n0\r?\n")
-    s.eval("p", r"Pin\(B0\)")
+    s.eval("p", r"Pin\(PB0\)")
     # time module rides on the same SysTick HAL.
     s.eval("import time; time.ticks_diff(time.ticks_ms(), 0) >= 0", r"True")
 print("MACHINE PASS")

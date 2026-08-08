@@ -42,6 +42,39 @@ running core.
 
 `CH32H417QEU6_V5F` (default) — REPL on USART1, PA9 (TX) / PA10 (RX), 115200 8N1.
 
+## GPIO
+
+    from machine import Pin
+    p = Pin("PB0", Pin.OUT)         # also Pin(16) or Pin.cpu.PB0
+    p.on(); p.off(); p.toggle()
+    q = Pin("PB1", Pin.IN, Pin.PULL_UP)
+    q.irq(lambda pin: print(pin), Pin.IRQ_RISING)
+
+All 95 I/O ports are exposed: PA0-PA15, PB0-PB15, PC0-PC15, PD0-PD15,
+PE0-PE15 and PF0-PF14. There is no PF15. The QEU6 is the QFN128 package, the
+largest of the family, and bonds out every pin the die has — which is why the
+SDK's `GPIO_IPD_Unused()` has no case for this part. A smaller package (MEU6 /
+QFN88, WEU6 / QFN68) would need a per-board pin list.
+
+Modes are `IN`, `OUT`, `OPEN_DRAIN`, `ALT`, `ALT_OPEN_DRAIN` and `ANALOG`;
+pulls are `PULL_UP`, `PULL_DOWN` and `None`; `drive()` takes `DRIVE_0`
+through `DRIVE_3` and maps to the H417's per-pin `SPEED` register.
+`machine.Signal` works, since `Pin` implements the pin protocol.
+
+**A pull and an output level are the same bit of silicon.** For an input with
+CNF = 10 the pull direction is taken from the output latch, so `pull=` is
+accepted only in `IN` mode, and `value()` must decode the pin's direction
+before choosing which register to read — reading `OUTDR` unconditionally makes
+every pulled-up input report 1 regardless of what its pin is doing.
+
+Interrupts use EXTI, which has 16 lines, one per pin *number*. Pin 0 of every
+port shares line 0, so only one of PA0/PB0/…/PF0 can carry an interrupt at a
+time; claiming a line another port holds raises `ValueError` rather than
+silently retargeting it. `hard=True` runs the handler in the ISR.
+
+Nothing stops you configuring PA9/PA10 (REPL), PA11/PA12 (USB) or PB8/PB9
+(SWCLK/SWDIO) — driving the last pair will drop the debugger.
+
 ## Memory layout
 
 Only ITCM and DTCM are zero-wait at the V5F's 400 MHz core clock. The shared

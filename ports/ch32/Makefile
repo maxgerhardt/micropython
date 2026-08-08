@@ -73,6 +73,7 @@ SRC_C += \
 	flash.c \
 	flashbdev.c \
 	modch32.c \
+	machine_pin.c \
 	usbd.c \
 	msc_disk.c \
 	mphalport.c \

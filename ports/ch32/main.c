@@ -20,6 +20,7 @@
 #include "uart.h"
 #include "flash.h"
 #include "usbd.h"
+#include "machine_pin.h"
 #include "mphalport.h"
 
 #ifndef MICROPY_HW_ITCM_HOT_CODE
@@ -147,6 +148,10 @@ int main(void) {
                 }
             }
         }
+
+        /* Silence pin interrupts before the heap holding their handlers is
+         * reclaimed, so a stray edge cannot dispatch into freed memory. */
+        machine_pin_deinit();
 
         mp_printf(&mp_plat_print, "MPY: soft reboot\n");
         mp_deinit();
