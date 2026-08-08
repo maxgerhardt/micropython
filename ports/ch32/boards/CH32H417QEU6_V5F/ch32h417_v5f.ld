@@ -163,11 +163,18 @@ SECTIONS
       PROVIDE(_highcode_vma_end1 = .);
 	} >RAM_CODE AT>FLASH 
 
+	/* TinyUSB's state lives here so the USB DMA can reach it. This is a
+	 * separate section from .bss, so the startup code's _sbss.._ebss clear does
+	 * NOT cover it -- ch32_usbd_init() zeroes it explicitly using these
+	 * symbols. Without that, every TinyUSB buffer and state variable starts as
+	 * whatever the RAM happened to hold. */
 	.usbram (NOLOAD) :
 	{
 		. = ALIGN(8);
+		PROVIDE( _susbram = . );
 		*/tinyusb/*(.bss .bss.* COMMON)
 		. = ALIGN(8);
+		PROVIDE( _eusbram = . );
 	} >USB_RAM
 
 	.dalign :

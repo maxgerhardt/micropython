@@ -5,6 +5,8 @@
  * VBUS sensing nor the ID pin is enabled -- a device-only build needs neither. */
 #include "ch32h417.h"
 
+#include <string.h>
+
 #include "py/mphal.h"
 #include "py/runtime.h"
 
@@ -16,7 +18,19 @@
 #define CH32_USBD_CLOCK_DEBUG (0)
 #endif
 
+/* Bounds of the .usbram section, from the board linker script. */
+extern uint8_t _susbram[];
+extern uint8_t _eusbram[];
+
 void ch32_usbd_init(void) {
+    /* TinyUSB's .bss is relocated into USB_RAM so the controller's DMA can
+     * reach it, which puts it outside the _sbss.._ebss range the startup code
+     * clears. Nothing else zeroes it, so do it here -- before any TinyUSB code
+     * runs. Skipping this leaves every endpoint buffer, transfer descriptor and
+     * class-driver state variable holding whatever survived in RAM, which
+     * presents as USB working or not depending on the build. */
+    memset(_susbram, 0, (size_t)(_eusbram - _susbram));
+
     /* USBFS needs exactly 48 MHz.
      *
      * The system PLL cannot produce it: SYSCLK is 400 MHz and the USBFS
