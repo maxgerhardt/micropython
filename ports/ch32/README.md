@@ -102,13 +102,37 @@ comes up.
     0x08070000   512K   FAT volume
     0x080F0000          end of the 960 KB user area
 
-The erase unit is 8 KB while FAT writes 512-byte sectors, so writes go through
-a single 8 KB write-back page cache; `os.sync()` flushes it. The block device
-is also exposed as `ch32.Flash()`.
+The erase unit is 8 KB while FAT writes 512-byte sectors, so a sector write is
+always read-modify-erase-program of a whole page. There is an 8 KB staging
+buffer for that, and it coalesces a run of sectors within one `writeblocks()`
+call into a single erase — but it is **not** a write-back cache. Every write
+commits before the call returns, so once a block-device operation completes,
+flash matches what the filesystem thinks it wrote. `os.sync()` is therefore a
+no-op in practice. The block device is exposed as `ch32.Flash()`.
 
-**FAT on raw flash is not power-loss safe.** An interruption between erase and
-reprogram loses the affected 8 KB page. FAT was chosen over littlefs because
-the volume is exposed over USB MSC later and hosts cannot read littlefs.
+This used to defer the flush until something asked for a sync, and it
+corrupted volumes: mounting discarded whatever was still dirty (and the
+remount after every soft reset went through that path), USB MSC only flushed
+on eject, and a debugger reset gives firmware no notice at all. Writes commit
+eagerly now for that last reason above all — nothing the firmware can do
+covers an OpenOCD reset.
+
+The cost is write amplification. A 512-byte sector write is ~5.5 ms and bulk
+writes plateau near 87 KB/s. The volume is formatted with 512-byte clusters,
+which stops FatFS batching, since it clamps multi-sector writes at the cluster
+boundary; formatting with 8 KB clusters would recover most of the throughput
+at a cost of 8 KB per file on a 505 KB volume. Rewrites of identical content
+skip the erase entirely, which matters because FAT rewrites its allocation
+table constantly.
+
+**FAT on raw flash is still not power-loss safe.** An interruption between the
+erase and the reprogram loses that 8 KB page. Closing that window needs a
+log-structured format; FAT was chosen over littlefs because the volume is
+exposed over USB MSC and hosts cannot read littlefs.
+
+Note that MSC durability also depends on the *host*: Windows caches FAT
+structures, so writes may not have reached the board at all until it flushes.
+That part is outside the firmware's control.
 
 **Reflashing firmware erases the filesystem.** This chip's flash driver
 mass-erases on every program command, so `make deploy` wipes user files.
