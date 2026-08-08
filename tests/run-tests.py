@@ -322,6 +322,16 @@ tests_requiring_target_wiring = (
 )
 
 
+def needs_target_wiring(test_file):
+    # The entries above are written with "/", but a test list built by glob()
+    # uses the platform separator, so on Windows every path is backslashed and
+    # a plain endswith() never matches. That made the wiring script silently
+    # unavailable for a whole-suite run while a test named explicitly on the
+    # command line -- typed with "/" -- worked, so the failure looked like a
+    # flake in the test rather than a bug in the runner.
+    return test_file.replace(os.sep, "/").endswith(tests_requiring_target_wiring)
+
+
 # unescape wanted regex chars and escape unwanted ones
 def convert_regex_escapes(line):
     cs = []
@@ -644,7 +654,7 @@ def run_micropython(
 
     else:
         # run via pyboard interface
-        requires_target_wiring = test_file.endswith(tests_requiring_target_wiring)
+        requires_target_wiring = needs_target_wiring(test_file)
         had_crash, output_mupy = pyb.run_script_on_remote_target(
             args, test_file_abspath, is_special, requires_target_wiring
         )
@@ -1412,7 +1422,7 @@ the last matching regex is used:
         tests = args.files
 
     # If any tests need it, prepare the target_wiring script for the target.
-    if pyb and any(test.endswith(tests_requiring_target_wiring) for test in tests):
+    if pyb and any(needs_target_wiring(test) for test in tests):
         detect_target_wiring_script(pyb, args)
 
     # End the target information line.
