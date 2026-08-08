@@ -70,7 +70,7 @@ void ch32_usbd_init(void) {
 
     RCC_HBPeriphClockCmd(RCC_HBPeriph_OTG_FS, ENABLE);
 
-    tud_init(0);
+    tusb_init(0);
     NVIC_EnableIRQ(USBFS_IRQn);
 }
 

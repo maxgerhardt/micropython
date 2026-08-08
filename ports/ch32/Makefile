@@ -101,14 +101,18 @@ TINYUSB_DIR = lib/tinyusb/src
 INC += -I$(TOP)/$(TINYUSB_DIR) -I$(TOP)/shared/tinyusb
 CFLAGS += -DCFG_TUSB_MCU=OPT_MCU_CH32H417 -DCFG_TUSB_OS=OPT_OS_NONE
 
-SRC_THIRDPARTY_C += \
-	$(TINYUSB_DIR)/tusb.c \
-	$(TINYUSB_DIR)/common/tusb_fifo.c \
-	$(TINYUSB_DIR)/device/usbd.c \
-	$(TINYUSB_DIR)/device/usbd_control.c \
-	$(TINYUSB_DIR)/class/cdc/cdc_device.c \
-	$(TINYUSB_DIR)/class/msc/msc_device.c \
-	$(TINYUSB_DIR)/portable/wch/dcd_ch32_usbfs.c \
+# TinyUSB ships its own source list; use it rather than naming files here, so that
+# upstream moving a file around (usbd_control.c folded into usbd.c, say) does not
+# break this Makefile. Everything not enabled in mpconfigport.h is #if'd out to an
+# empty translation unit, so the classes we do not use cost nothing but a compile.
+# This follows ports/samd and ports/mimxrt.
+TINYUSB_SRC_C :=
+-include $(TOP)/$(TINYUSB_DIR)/tinyusb.mk
+
+SRC_THIRDPARTY_C += $(addprefix lib/tinyusb/, \
+	$(TINYUSB_SRC_C) \
+	src/portable/wch/dcd_ch32_usbfs.c \
+	)
 
 SRC_C += \
 	shared/tinyusb/mp_usbd.c \
