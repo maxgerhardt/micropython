@@ -1,7 +1,10 @@
 """Verify the machine module's basic surface."""
+
 import sys, os
-sys.path.insert(0, os.path.join(
-    os.path.dirname(os.path.abspath(__file__)), "..", "..", "..", "scripts"))
+
+sys.path.insert(
+    0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "..", "..", "scripts")
+)
 from serial_expect import ReplSession
 
 with ReplSession() as s:

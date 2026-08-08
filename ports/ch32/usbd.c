@@ -88,12 +88,21 @@ void ch32_usbd_init(void) {
         const uint32_t ctlr = RCC->CTLR, cfgr2 = RCC->CFGR2;
         static const char hx[] = "0123456789abcdef";
         const char *lbl = "\r\nUSBCLK CTLR=";
-        while (*lbl) { b[n++] = *lbl++; }
-        for (int i = 7; i >= 0; i--) { b[n++] = hx[(ctlr >> (i * 4)) & 0xf]; }
+        while (*lbl) {
+            b[n++] = *lbl++;
+        }
+        for (int i = 7; i >= 0; i--) {
+            b[n++] = hx[(ctlr >> (i * 4)) & 0xf];
+        }
         lbl = " CFGR2=";
-        while (*lbl) { b[n++] = *lbl++; }
-        for (int i = 7; i >= 0; i--) { b[n++] = hx[(cfgr2 >> (i * 4)) & 0xf]; }
-        b[n++] = '\r'; b[n++] = '\n';
+        while (*lbl) {
+            b[n++] = *lbl++;
+        }
+        for (int i = 7; i >= 0; i--) {
+            b[n++] = hx[(cfgr2 >> (i * 4)) & 0xf];
+        }
+        b[n++] = '\r';
+        b[n++] = '\n';
         uart_tx_strn(b, n);
     }
     #endif

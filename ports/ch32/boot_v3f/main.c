@@ -18,7 +18,7 @@ static void uart1_init(uint32_t baud) {
 
     /* AFIO clock is required or the GPIO_PinAFConfig writes are dropped. */
     RCC_HB2PeriphClockCmd(RCC_HB2Periph_GPIOA | RCC_HB2Periph_USART1
-                          | RCC_HB2Periph_AFIO, ENABLE);
+        | RCC_HB2Periph_AFIO, ENABLE);
     /* The H417 uses an STM32F4-style AF mux: USART1 is AF7 on PA9/PA10. */
     GPIO_PinAFConfig(GPIOA, GPIO_PinSource9, GPIO_AF7);
     GPIO_PinAFConfig(GPIOA, GPIO_PinSource10, GPIO_AF7);

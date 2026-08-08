@@ -18,7 +18,7 @@ void uart_init(uint32_t baud) {
     /* AFIO must be clocked: GPIO_PinAFConfig writes land in the AFIO block and
      * are silently dropped while its clock is off. */
     RCC_HB2PeriphClockCmd(RCC_HB2Periph_GPIOA | RCC_HB2Periph_USART1
-                          | RCC_HB2Periph_AFIO, ENABLE);
+        | RCC_HB2Periph_AFIO, ENABLE);
 
     /* The H417 has an STM32F4-style alternate-function mux: GPIO_Mode_AF_PP
      * only selects "some alternate function", GPIO_PinAFConfig picks which one.
