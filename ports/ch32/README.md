@@ -75,6 +75,47 @@ silently retargeting it. `hard=True` runs the handler in the ISR.
 Nothing stops you configuring PA9/PA10 (REPL), PA11/PA12 (USB) or PB8/PB9
 (SWCLK/SWDIO) — driving the last pair will drop the debugger.
 
+## I2C
+
+    from machine import I2C
+    i2c = I2C(1, freq=400000)        # SCL=PB6, SDA=PB7
+    i2c.scan()
+    i2c.writeto(0x3C, b"\x00\xAF")
+    i2c.readfrom(0x3C, 1)
+
+`I2C(1)` through `I2C(4)` map to the hardware peripherals; `SoftI2C` bit-bangs
+any two pins. Default pin pairs, with the alternatives the mux can reach:
+
+| Bus | Default | Alternative | Domain |
+|-----|---------|-------------|--------|
+| 1 | PB6 / PB7 | PB8 / PB9 (also SWCLK/SWDIO) | **VDDIO 3.3 V** |
+| 2 | PB10 / PB11 | PC0 / PC1 | VIO18 |
+| 3 | PA8 / PC9 | PA14 / PA13 | mixed / VIO18 |
+| 4 | PD12 / PD13 | PF12 / PF13 | VIO18 |
+
+**PB6/PB7 is the only I2C pair in the 3.3 V domain.** Everything else is on
+VIO18, which comes up at 1.8 V, so an ordinary 3.3 V sensor on those pins needs
+level shifting. PB6/PB7 are also 5 V tolerant (FT in the pin table).
+
+I2C is open-drain and needs external pull-ups; the internal ones are far too
+weak. Most breakout modules already carry 4.7 k.
+
+**Do not use the vendor `I2C_Init()` here.** It derives the clock divider from
+RCC's `HCLK_Frequency`, but this peripheral is fed by the system clock, and
+HCLK is `SYSCLK >> 2` on this board — so the bus ran at exactly 4.00x the
+requested rate (measured at 50/100/200/400 kHz). `machine_i2c.c` programs
+`CTLR2`/`CKCFGR`/`RTR` directly from `SystemCoreClock` instead, which measures
+1.00x. `CCR` is 12 bits, so the slowest standard-mode bus is about 49 kHz; use
+`SoftI2C` below that.
+
+Creating a `SoftI2C` on PB6/PB7 reconfigures those pins to plain GPIO, which
+disconnects the hardware peripheral. Re-create the `I2C` object to take them
+back.
+
+`test_i2c.py` verifies all of this against an SSD1306 OLED, and skips when
+nothing is attached. `framebuf` is enabled, so micropython-lib's display
+drivers work as-is.
+
 ## Memory layout
 
 Only ITCM and DTCM are zero-wait at the V5F's 400 MHz core clock. The shared
@@ -222,11 +263,11 @@ every time; a busy one lands somewhere in `mp_execute_bytecode`.
 
 ## Measured
 
-    text 185548   data 4324   bss 30748     heap ~228 KB
+    text 196856   data 4388   bss 30812     heap ~228 KB
     core clock 400 MHz
 
     benchmark  ~320 ms  (V3F baseline 4297 ms -> 13.3x)
-    upstream tests: 611 passed / 0 failed (20134 testcases)
+    upstream tests: 623 passed / 0 failed (22002 testcases)
 
 The benchmark moves around by ±10% between runs depending on what the USB host
 is doing to the MSC volume, so treat differences smaller than that as noise —

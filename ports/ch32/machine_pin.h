@@ -18,12 +18,8 @@
 
 #define MACHINE_PIN_PORT_MAX (6)
 
-/* Forward declared as a type in mphalport.h, which py/mphal.h reaches first;
- * this completes it. */
-struct _machine_pin_obj_t {
-    mp_obj_base_t base;
-    uint8_t id;
-};
+/* machine_pin_obj_t itself is defined in mphalport.h -- extmod needs the
+ * complete type without including this header. */
 
 extern const mp_obj_type_t machine_pin_type;
 

@@ -58,6 +58,17 @@
 #define MICROPY_PY_MACHINE_MEMX         (1)
 #define MICROPY_PY_MACHINE_PULSE        (0)
 
+/* I2C. The hardware peripheral lives in ports/ch32/machine_i2c.c; SoftI2C
+ * comes from extmod and bit-bangs any two pins, which is the fallback for the
+ * pin pairs the I2C mux cannot reach. */
+#define MICROPY_PY_MACHINE_I2C          (1)
+#define MICROPY_PY_MACHINE_SOFTI2C      (1)
+
+/* framebuf is what every display driver in micropython-lib builds on -- an
+ * SSD1306 is unusable without it -- and it also lets the upstream suite run
+ * its framebuf tests instead of skipping them. */
+#define MICROPY_PY_FRAMEBUF             (1)
+
 // time.sleep/ticks_* ride on the SysTick HAL via extmod's default bodies,
 // which call mp_hal_delay_ms/us and mp_hal_ticks_ms/us/cpu directly.
 #define MICROPY_PY_TIME                 (1)

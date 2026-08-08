@@ -4,6 +4,10 @@
 #include <stdint.h>
 #include <stddef.h>
 #include "py/mpconfig.h"
+/* For mp_obj_t, needed by the pin API below. py/mphal.h includes this header
+ * before anything else has defined it, and py/obj.h does not include mphal.h,
+ * so there is no cycle. */
+#include "py/obj.h"
 #include "py/ringbuf.h"
 #include "shared/runtime/interrupt_char.h"
 
@@ -26,11 +30,14 @@ static inline void mp_hal_wake_main_task_from_isr(void) {
  * so they live here rather than in machine_pin.h, which is included too late
  * and would only redefine them.
  *
- * At this point py/mphal.h has pulled in stdint and mpconfig and nothing else,
- * so mp_obj_t does not exist yet. The object type is therefore forward
- * declared here and completed in machine_pin.h, and only the accessors that
- * do not mention mp_obj_t are prototyped. */
-typedef struct _machine_pin_obj_t machine_pin_obj_t;
+ * The object is defined here rather than in machine_pin.h because extmod's
+ * SoftI2C and SoftSPI reach it through mp_hal_pin_name() without including any
+ * port header, so a forward declaration is not enough -- they need the
+ * complete type. */
+typedef struct _machine_pin_obj_t {
+    mp_obj_base_t base;
+    uint8_t id;                       /* port index * 16 + pin number */
+} machine_pin_obj_t;
 
 #define mp_hal_pin_obj_t const machine_pin_obj_t *
 #define mp_hal_get_pin_obj(o) machine_pin_get(o)
@@ -42,11 +49,19 @@ typedef struct _machine_pin_obj_t machine_pin_obj_t;
 #define mp_hal_pin_od_low(p) machine_pin_write((p), 0)
 #define mp_hal_pin_od_high(p) machine_pin_write((p), 1)
 
+/* mp_hal_pin_name() yields the pin id, so extmod prints it as a plain number. */
+#define MP_HAL_PIN_FMT "%u"
+
 int machine_pin_read(const machine_pin_obj_t *self);
 void machine_pin_write(const machine_pin_obj_t *self, int value);
 void mp_hal_pin_input(const machine_pin_obj_t *self);
 void mp_hal_pin_output(const machine_pin_obj_t *self);
 void mp_hal_pin_open_drain(const machine_pin_obj_t *self);
+const machine_pin_obj_t *machine_pin_get(mp_obj_t obj);
+
+/* SoftI2C/SoftSPI bit-bang with this. There is no faster path than the plain
+ * microsecond delay here -- it is already a bare SysTick read loop. */
+#define mp_hal_delay_us_fast mp_hal_delay_us
 
 // Provided by the SDK's system_ch32h417.c.
 extern uint32_t SystemCoreClock;
