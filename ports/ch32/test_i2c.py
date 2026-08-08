@@ -1,7 +1,7 @@
 """Verify machine.I2C against an SSD1306 OLED on I2C1 (SCL=PB6, SDA=PB7).
 
 PB6/PB7 are the only I2C-capable pair on this part that sits in the 3.3 V
-VDDIO domain; every other option is on VIO18, which comes up at 1.8 V.
+VDDIO domain; every other option is on VIO18, which comes up well below 3.3 V.
 
 The display is a good target for this because it exercises both directions:
 long writes for the framebuffer, and a status byte whose bit 6 tracks whether

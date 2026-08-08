@@ -38,8 +38,10 @@ typedef struct _machine_i2c_obj_t {
  *
  * A note for anyone adding to this: on this part PB6/PB7 are the only I2C pair
  * that sits in the VDDIO (3.3 V) domain. Everything else here is on VIO18,
- * which comes up at 1.8 V unless the board says otherwise, so those pins need
- * level shifting for an ordinary 3.3 V sensor. */
+ * which comes up well below 3.3 V, so those pins need level shifting for an
+ * ordinary 3.3 V sensor. (The datasheet only distinguishes the domains by
+ * colour in the package figure, so the exact level has to be measured; see
+ * docs/hw/ch32h417-notes.md, where it is still an open question.) */
 typedef struct _machine_i2c_pins_t {
     uint8_t id;
     uint8_t scl;

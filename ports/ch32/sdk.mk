@@ -23,6 +23,7 @@ SDK_SRC_C := \
 	$(SDK)/Peripheral/ch32h417/src/ch32h417_rcc.c \
 	$(SDK)/Peripheral/ch32h417/src/ch32h417_gpio.c \
 	$(SDK)/Peripheral/ch32h417/src/ch32h417_i2c.c \
+	$(SDK)/Peripheral/ch32h417/src/ch32h417_spi.c \
 	$(SDK)/Peripheral/ch32h417/src/ch32h417_adc.c \
 	$(SDK)/Peripheral/ch32h417/src/ch32h417_usart.c \
 	$(SDK)/Peripheral/ch32h417/src/ch32h417_flash.c \

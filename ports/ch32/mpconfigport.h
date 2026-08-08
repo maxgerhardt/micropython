@@ -69,6 +69,13 @@
 #define MICROPY_PY_MACHINE_I2C          (1)
 #define MICROPY_PY_MACHINE_SOFTI2C      (1)
 
+/* SPI. Same split as I2C: the four hardware controllers live in
+ * ports/ch32/machine_spi.c, and SoftSPI from extmod bit-bangs any three pins
+ * for the combinations the AF mux cannot reach. Chip select is not part of
+ * either -- callers drive CS with a Pin, as on every other port. */
+#define MICROPY_PY_MACHINE_SPI          (1)
+#define MICROPY_PY_MACHINE_SOFTSPI      (1)
+
 /* ADC1, single conversion on demand. read_uv() is exposed because the raw
  * 16-bit reading is meaningless without knowing the reference. */
 #define MICROPY_PY_MACHINE_ADC          (1)

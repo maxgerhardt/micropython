@@ -75,6 +75,8 @@ SRC_C += \
 	modch32.c \
 	machine_pin.c \
 	machine_i2c.c \
+	machine_spi.c \
+	drivers/bus/softspi.c \
 	drivers/dht/dht.c \
 	usbd.c \
 	msc_disk.c \

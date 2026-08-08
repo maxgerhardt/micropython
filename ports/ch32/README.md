@@ -94,8 +94,8 @@ any two pins. Default pin pairs, with the alternatives the mux can reach:
 | 4 | PD12 / PD13 | PF12 / PF13 | VIO18 |
 
 **PB6/PB7 is the only I2C pair in the 3.3 V domain.** Everything else is on
-VIO18, which comes up at 1.8 V, so an ordinary 3.3 V sensor on those pins needs
-level shifting. PB6/PB7 are also 5 V tolerant (FT in the pin table).
+VIO18, which comes up well below 3.3 V, so an ordinary 3.3 V sensor on those
+pins needs level shifting. PB6/PB7 are also 5 V tolerant (FT in the pin table).
 
 I2C is open-drain and needs external pull-ups; the internal ones are far too
 weak. Most breakout modules already carry 4.7 k.
@@ -148,6 +148,100 @@ two agree to within **4 mV**:
 | 2048 | 1650 mV | 1653 mV |
 | 3072 | 2475 mV | 2479 mV |
 | 4095 | 3300 mV | 3298 mV |
+
+## SPI
+
+    from machine import SPI, Pin
+    cs = Pin("PA4", Pin.OUT)
+    cs.value(1)
+    spi = SPI(1, baudrate=1000000, polarity=0, phase=0)   # SCK=PA5, MISO=PA6, MOSI=PA7
+
+    cs.value(0)
+    spi.write(b"\xd0")          # BMP280 chip-id register, read bit set
+    print(spi.read(1))
+    cs.value(1)
+
+`SPI(1)` through `SPI(4)` map to the hardware controllers; `SoftSPI` bit-bangs
+any three pins. Chip select is **not** handled by either — drive it with a
+`Pin`, as on every other MicroPython port. Hardware NSS would tie a bus to one
+device, which stops being useful the moment there are two.
+
+| Bus | Default SCK / MISO / MOSI | Domain |
+|-----|---------------------------|--------|
+| 1 | PA5 / PA6 / PA7 | **3.3 V** |
+| 2 | PB13 / PB14 / PB15 | VIO18 |
+| 3 | PB3 / PC11 / PC12 | VIO18 |
+| 4 | PE2 / PE5 / PE6 | **3.3 V** |
+
+`sck=`, `miso=` and `mosi=` select any other pin the mux can reach for that
+bus; anything else raises `ValueError`. SPI1 also reaches PB3/PB4/PB5,
+PF5/PF3/PD7 and PF7/PF9/PF8.
+
+**SPI1 and SPI4 are the buses whose default pins are in a 3.3 V domain.** For
+SPI1 that is measured, not read off the datasheet, whose supply domains are
+only distinguishable by colour in the package figure: driving PA5, PA6 and PA7
+high and reading each back through the ADC gives 3.299 V. The level of the
+VIO18 pins is still open — see `docs/hw/ch32h417-notes.md` — but it is well
+below 3.3 V either way, so treat those pins as needing level shifting.
+
+Baudrate is `HCLK >> (n + 1)` for n in 0..7, so 50 MHz down to 390625 Hz in
+powers of two, and an arbitrary request cannot be met exactly. The driver
+rounds **down** — a device with a documented maximum SCK must not be
+overclocked because the arithmetic landed one step high — and `print(spi)`
+reports what it actually got:
+
+| requested | actual |
+|---|---|
+| 1000000 | 781250 |
+| 4000000 | 3125000 |
+| 12500000 | 12500000 |
+| 100000 | 390625 — **faster than asked** |
+
+The last row is the one exception, and it is worth knowing about: below
+390625 Hz there is no slower divider, so the request is clamped *up*. That
+matches what the other ports do and is what the upstream test suite expects,
+but it means `print(spi)` is the only reliable answer at low rates. Use
+`SoftSPI` if you genuinely need a slow bus.
+
+Only `bits=8` is supported. The peripheral can do 16-bit words, but with a byte
+order the buffer protocol does not describe, so exposing it would be a trap.
+
+Throughput reaches the line rate — the software loop is not the bottleneck.
+Writing 64 KB:
+
+| SCK | `write` | `write_readinto` | `readinto` |
+|---|---|---|---|
+| 781 kHz | 781 kb/s (100%) | 781 kb/s (100%) | 780 kb/s (100%) |
+| 3.125 MHz | 3121 kb/s (100%) | 3139 kb/s (100%) | 3121 kb/s (100%) |
+| 12.5 MHz | 12483 kb/s (100%) | 12483 kb/s (100%) | 12193 kb/s (98%) |
+
+Two things get that: the full-duplex path keeps one byte in flight ahead of the
+one being collected, so SCK does not stall for a round trip per byte, and
+`write()` skips the receive side entirely. The latter is safe because `OVR`
+affects only the receive buffer — transmission carries on — and the next
+transfer clears it.
+
+Because the loop already saturates the bus, neither DMA nor a per-byte
+interrupt would make this faster at any rate up to 25 MHz. Interrupts would be
+slower (an ISR costs more than the 640 ns byte time at 12.5 MHz), and DMA
+cannot reach the GC heap at all: the heap lives in DTCM, which no DMA engine on
+this part can address — the same constraint that gives USB its own buffer in
+the shared region. DMA would therefore need a bounce buffer and a copy through
+memory running at HCLK.
+
+**Full duplex is limited to 25 MHz.** At 50 MHz (`HCLK/2`) a byte is 160 ns,
+which is shorter than the CPU takes to collect one, so the receive buffer
+overruns and stops updating. `write()` is unaffected — there is nothing to
+collect — but `read()`, `readinto()` and `write_readinto()` raise
+`OSError: SPI receive overrun: baudrate too high for full duplex` rather than
+returning data that silently has holes in it.
+
+Creating a `SoftSPI` on SPI1's pins reconfigures them to plain GPIO and
+disconnects the hardware peripheral, exactly as `SoftI2C` does. Re-create the
+`SPI` object to take them back.
+
+`test_spi.py` verifies all of this against a BMP280/BME280, and skips when
+nothing is attached.
 
 ## Memory layout
 
@@ -321,6 +415,32 @@ see it. **To check the timebase, time a device-side sleep against the host:**
     t0 = time.monotonic()
     pyb.exec_("import time; time.sleep_ms(2000)")
     print((time.monotonic() - t0) * 1000)     # must be ~2000, was ~8000
+
+A second, independent timebase bug lived here afterwards, and `sleep_ms()` is
+blind to it too — check `sleep_us()` the same way. `ticks_us()` reconstructs a
+tick that has completed but not yet been serviced, by reading SysTick's
+overflow flag. It used to *clear* that flag and bump the millisecond counter
+itself, under an interrupt lock, on the assumption that clearing the flag also
+cancelled the pending interrupt. It does not — NVIC latches the request when
+the flag asserts — so the handler counted the same tick again.
+
+The error grew with how hard the clock was polled, since the race is whether
+the reconstruction beats the handler to the flag. A Python loop calling
+`ticks_us()` every ~20 us ran 3% fast, which reads as jitter; a C loop polling
+every ~0.1 us ran up to 25% fast. So `time.sleep_us(5000)` returned after
+4060 us, and the SPI driver's own throughput figures were nonsense.
+
+The fix is to cancel the pending interrupt too, so exactly one of the
+reconstruction and the handler counts any given tick. Making the
+reconstruction purely read-only instead — the obvious alternative — is wrong:
+it can then account for only *one* outstanding tick, so the clock saturates
+about 1 ms into any critical section and DHT decoding stops dead. With the
+pending-clear in place, `sleep_us()` measures exact and a 20 ms interrupts-off
+window spinning on `ticks_us()` measures 20008 us:
+
+    t0 = time.monotonic()
+    pyb.exec_("import time\nfor _ in range(200): time.sleep_us(5000)")
+    print(time.monotonic() - t0)              # must be ~1.0, was ~0.81
 
 ## Measured
 
