@@ -293,10 +293,19 @@ def run_script_on_remote_target(pyb, args, test_file, is_special, requires_targe
         pyb.enter_raw_repl(timeout_overall=TEST_ENTER_RAW_REPL_TIMEOUT)
 
         # Inject target wiring if needed by the test.
-        if requires_target_wiring and pyb.target_wiring_script:
+        #
+        # run-tests.py only calls detect_target_wiring_script(), which creates
+        # this attribute, when some selected test matches its own
+        # tests_requiring_target_wiring suffix list. That list and the
+        # requires_target_wiring predicate used here do not agree, so on a
+        # serial target the attribute can be missing entirely and every test
+        # dies with AttributeError. Absent means "no wiring available", which is
+        # what an empty script already means here.
+        target_wiring_script = getattr(pyb, "target_wiring_script", b"")
+        if requires_target_wiring and target_wiring_script:
             pyb.exec_(
                 "import sys;sys.modules['target_wiring']=__build_class__(lambda:exec("
-                + repr(pyb.target_wiring_script)
+                + repr(target_wiring_script)
                 + "),'target_wiring')"
             )
 
