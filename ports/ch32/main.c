@@ -23,6 +23,7 @@
 #include "machine_pin.h"
 #include "machine_dac.h"
 #include "machine_pwm.h"
+#include "machine_mem_backup.h"
 #include "machine_rtc.h"
 #include "machine_wdt.h"
 #include "mphalport.h"
@@ -121,6 +122,10 @@ int main(void) {
      * an oscillator with a timeout, and a timeout needs a clock to measure. Run
      * ahead of mp_hal_init() it spun forever with no output at all. */
     machine_rtc_init_boot();
+    /* Outside the soft-reset loop below: this decides whether the backup
+     * region survived, and re-deciding that on every soft reset would
+     * be re-deciding it wrongly. */
+    ch32_mem_backup_init();
     ch32_usbd_init();
 
     // Leave a margin below the true stack top for the C stack itself.

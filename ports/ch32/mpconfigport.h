@@ -21,6 +21,18 @@
 // pass a window onto a buffer around without copying, which is the normal way
 // to do zero-copy I/O on a board with this little RAM.
 #define MICROPY_PY_BUILTINS_MEMORYVIEW  (1)
+
+/* uctypes: the way to lay a struct over a buffer or a peripheral register block
+ * without writing C. Not in this ROM level by default, but hard to do without
+ * on a board whose point is talking to hardware -- and the driver work here has
+ * already wanted it twice. */
+#define MICROPY_PY_UCTYPES               (1)
+
+/* machine.mem_backup(). The region is plain SRAM in its own NOLOAD section, so
+ * it survives a reset but not power-off -- see machine_mem_backup.c for why
+ * there is nothing battery-backed to use instead. */
+#define MICROPY_PY_MACHINE_MEM_BACKUP    (1)
+#define MICROPY_PY_MACHINE_MEM_BACKUP_INCLUDEFILE "ports/ch32/machine_mem_backup.c"
 #define MICROPY_PY_ARRAY_SLICE_ASSIGN   (1)
 #define MICROPY_PY_BUILTINS_BYTES_HEX   (1)
 

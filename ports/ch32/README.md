@@ -433,6 +433,38 @@ whatever level the last compare produced.
 stays live in alternate-function mode — rather than by reading back the
 registers it just wrote.
 
+## Backup memory
+
+    import machine
+    mem = machine.mem_backup()      # a writable memoryview, 1024 bytes
+    mem[0] = 0x42
+    print(len(mem), mem.itemsize)   # 1024 1
+
+`machine.mem_backup()` returns 1024 bytes that **survive a soft reset and
+`machine.reset()`, and are lost when power goes away** — the same guarantee
+esp32, rp2 and nrf give.
+
+It is ordinary SRAM, in its own `NOLOAD` section placed between `.bss` and the
+heap. Being in neither `.data` nor `.bss` is the whole mechanism: those are the
+two things startup copies and clears, so a section in neither comes through a
+reset untouched. It sits below `_heap_start`, so the GC never sees it.
+
+There is nothing battery-backed to use instead. The datasheet mentions "the
+backup register" alongside the RTC, but no such register block appears in the
+reference manual's register tables, the SDK has no header for one, and probing
+the address STM32F1 uses (`0x40006C00`) finds nothing writable — twenty slots
+read back as zero after being written, with PWR and BKP clocked and `DBP` set.
+The only thing in this chip's backup power domain that holds a value is the RTC
+counter itself.
+
+After a power cycle the SRAM would otherwise come back as whatever it settled
+to, which is indistinguishable from real data. A magic word in front of the user
+area turns that into a defined result: if it does not match, the region is
+zeroed, so **a cold boot reads zeros** and a warm one reads what was there.
+
+`test_mem_backup.py` stamps all 1024 bytes and checks them back after both a
+soft and a hard reset.
+
 ## Frozen modules
 
 `boards/manifest.py` lists the Python modules compiled into the firmware, so
@@ -704,6 +736,26 @@ the same `misa=0x40901127`, including a hardware single-precision FPU, paired wi
 `MICROPY_FLOAT_IMPL_FLOAT`. This differs from the soft-float `ilp32` in the
 stock PlatformIO board definition, and is safe because the vendor SDK is
 compiled from source with the same flags.
+
+## Modules beyond the default set
+
+This port's ROM level is `CORE_FEATURES`, which leaves out a few things that
+matter more on a board than they do in general:
+
+| Module / feature | Why it is on |
+|---|---|
+| `uctypes` | Lays a struct over a buffer or a peripheral register block without writing C. Enabling it also brings in 24 upstream tests. |
+| `framebuf` | Display drivers from micropython-lib work as-is. |
+| `machine.mem_backup` | See "Backup memory". |
+| `time.time()`, `localtime()`, `mktime()` | Answered by the RTC. |
+| Unicode `str` | So `"°C"` prints as `°C`. |
+
+Example, reading a DHT frame back as named fields:
+
+    import uctypes
+    LAYOUT = {"hum": 0 | uctypes.UINT16, "temp": 2 | uctypes.UINT16, "sum": 4 | uctypes.UINT8}
+    buf = bytearray(5)
+    f = uctypes.struct(uctypes.addressof(buf), LAYOUT, uctypes.BIG_ENDIAN)
 
 ## Port gotchas
 

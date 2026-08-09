@@ -192,6 +192,16 @@ SECTIONS
 		PROVIDE( _ebss = .);
 	} >RAM AT>FLASH
 
+	/* machine.mem_backup(). See the matching comment in the V5F script: this
+	 * has to live outside .data and .bss to survive a reset. */
+	.mem_backup (NOLOAD) :
+	{
+		. = ALIGN(8);
+		PROVIDE( _mem_backup_start = . );
+		. = . + 1032;
+		PROVIDE( _mem_backup_end = . );
+	} >RAM
+
 	PROVIDE( _end = _ebss);
 	PROVIDE( end = . );
 	PROVIDE( _heap_start = . );  

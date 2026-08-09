@@ -223,6 +223,18 @@ SECTIONS
 		PROVIDE( _ebss = .);
 	} >RAM AT>FLASH
 
+	/* machine.mem_backup(). Its own NOLOAD section, deliberately outside .data
+	 * and .bss, because those are the two things startup copies and clears --
+	 * being in neither is the entire mechanism by which this survives a reset.
+	 * It is before _heap_start, so the GC never sees it either. */
+	.mem_backup (NOLOAD) :
+	{
+		. = ALIGN(8);
+		PROVIDE( _mem_backup_start = . );
+		. = . + 1032;
+		PROVIDE( _mem_backup_end = . );
+	} >RAM
+
 	PROVIDE( _end = _ebss);
 	PROVIDE( end = . );
 	PROVIDE( _heap_start = . );  
