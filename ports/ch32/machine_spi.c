@@ -1,11 +1,18 @@
 /* Hardware SPI for the CH32H417.
  *
  * The peripheral is the familiar STM32 one -- CTLR1/CTLR2, a status register
- * (STATR here, not SR), one DATAR shared by transmit and receive -- so the
- * transfer loop is the classic "push a byte, pull a byte" full-duplex shift.
- * There is no FIFO: every write is answered by exactly one read, and the
- * received byte must be collected before the next one arrives or OVR is set
- * and the data is lost. This driver therefore never runs ahead of the receiver.
+ * (STATR here, not SR), one DATAR shared by transmit and receive. There is no
+ * FIFO: every write is answered by exactly one read, and the received byte must
+ * be collected before the next one arrives or OVR is set and the data is lost.
+ *
+ * Transfers therefore go through DMA, not through a polling loop. That is not
+ * an optimisation, it is what the peripheral needs to run at its own clock: at
+ * HCLK/2 a byte is 160 ns, and a single register access across the bus matrix
+ * costs around 200 ns, so no loop the CPU can run keeps up. Measured on this
+ * board, polling topped out at 1.59 MB/s writing and 0.57 MB/s full duplex,
+ * whatever the prescaler said, and full duplex above 6.25 MHz lost bytes
+ * outright. DMA holds 99% of the line rate at every prescaler, 6.2 MB/s at
+ * 50 MHz. See "SPI throughput" in docs/hw/ch32h417-notes.md for the figures.
  *
  * Chip select is deliberately not handled. Hardware NSS ties one bus to one
  * device and gets in the way the moment there are two, so MicroPython's
@@ -34,8 +41,39 @@
 /* One byte at the slowest possible clock (HCLK/256, so ~390 kHz) takes about
  * 21 us. This is three orders of magnitude above that: it is here to turn a
  * wedged peripheral into an exception instead of a hang, not to police
- * timing. */
+ * timing. Both waits below restart it whenever a byte moves, so it bounds the
+ * gap between bytes rather than the length of a transfer. */
 #define SPI_TIMEOUT_US        (20000)
+
+/* Two DMA channels serve all four buses. A machine.SPI transfer is synchronous
+ * and this port has no threads, so only one can ever be in flight. Channels 2
+ * and 3 are the pair WCH's own SPI_DMA example uses. */
+#define SPI_DMA_RX            (DMA1_Channel2)
+#define SPI_DMA_TX            (DMA1_Channel3)
+#define SPI_DMA_RX_MUX        (DMA_MuxChannel2)
+#define SPI_DMA_TX_MUX        (DMA_MuxChannel3)
+#define SPI_DMA_RX_IRQN       (DMA1_Channel2_IRQn)
+#define SPI_DMA_TX_IRQN       (DMA1_Channel3_IRQn)
+/* INTFR/INTFCR give each channel a nibble: global, complete, half, error. */
+#define SPI_DMA_RX_FLAGS      ((uint32_t)0x000000F0)
+#define SPI_DMA_TX_FLAGS      ((uint32_t)0x00000F00)
+
+/* Reference manual table 10-2: SPIn_TX is DMA request 61 + 2n and SPIn_RX is
+ * 62 + 2n, so 63 and 64 for SPI1. WCH's example asks for 65 and 66 on SPI2,
+ * which agrees. */
+#define SPI_DMA_TX_REQ(id)    (61 + 2 * (id))
+#define SPI_DMA_RX_REQ(id)    (62 + 2 * (id))
+
+/* CNTR is 16 bits, so a longer buffer goes out in several passes. */
+#define SPI_DMA_MAX_LEN       (65535)
+
+/* Below this a write is quicker to push out by hand than to set two channels up
+ * for. Setting them up costs about 3 us, so at HCLK/2 -- where DMA saves the
+ * most per byte -- the two paths cost the same at around ten bytes, and at
+ * HCLK/8 and slower polling already keeps SCK busy and DMA can only lose. Set a
+ * little above the crossover so that short register traffic, which is most of
+ * what a write is used for, stays on the cheap path at every baudrate. */
+#define SPI_DMA_MIN_LEN       (16)
 
 typedef struct _machine_spi_obj_t {
     mp_obj_base_t base;
@@ -258,84 +296,212 @@ static int machine_spi_wait(machine_spi_obj_t *self, uint16_t mask) {
     return 0;
 }
 
+/* Discard anything a previous transfer left in the receive path, so a stale
+ * byte cannot be handed back as if it belonged to this one. Reading DATAR is
+ * what clears RXNE; reading STATR afterwards clears OVR, which a write-only
+ * transfer always leaves set because nothing collected its received bytes. */
+static void machine_spi_drain(SPI_TypeDef *spi) {
+    if (spi->STATR & SPI_STATR_RXNE) {
+        (void)spi->DATAR;
+    }
+    (void)spi->STATR;
+}
+
+/* What read() clocks out when the caller gave nothing to send. At file scope
+ * because the DMA reads it while machine_spi_transfer_dma() is asleep. */
+static const uint8_t machine_spi_idle_byte = 0;
+
+/* These exist only to end the WFI in machine_spi_dma_wait() promptly. Each
+ * clears its own transfer-complete enable, so it fires once per transfer rather
+ * than spinning on a flag nobody has cleared yet. */
+void DMA1_Channel2_IRQHandler(void) __attribute__((interrupt("WCH-Interrupt-fast")));
+void DMA1_Channel2_IRQHandler(void) {
+    SPI_DMA_RX->CFGR &= ~DMA_IT_TC;
+    DMA1->INTFCR = SPI_DMA_RX_FLAGS;
+}
+
+void DMA1_Channel3_IRQHandler(void) __attribute__((interrupt("WCH-Interrupt-fast")));
+void DMA1_Channel3_IRQHandler(void) {
+    SPI_DMA_TX->CFGR &= ~DMA_IT_TC;
+    DMA1->INTFCR = SPI_DMA_TX_FLAGS;
+}
+
+/* Sleep until `ch` has moved every byte. Returns false on timeout. */
+static bool machine_spi_dma_wait(DMA_Channel_TypeDef *ch) {
+    uint32_t left = ch->CNTR;
+    uint64_t deadline = mp_hal_ticks_us() + SPI_TIMEOUT_US;
+    while (ch->CNTR != 0) {
+        /* Gate the core clock rather than spin on CNTR: the transfer is the
+         * DMA's work, not the CPU's, and at 390 kHz a full buffer is over a
+         * second of otherwise wasted power.
+         *
+         * There is no wait-for-event race to lose here. The handler above has
+         * already disabled its interrupt by the time CNTR reads zero, so a
+         * completion that beats us to the test leaves the loop instead of
+         * sleeping through it; and a WFI that does sleep is bounded by
+         * SysTick's 1 ms tick regardless. */
+        __WFI();
+        uint32_t now = ch->CNTR;
+        if (now != left) {
+            left = now;
+            deadline = mp_hal_ticks_us() + SPI_TIMEOUT_US;
+        } else if (mp_hal_ticks_us() > deadline) {
+            return false;
+        }
+    }
+    return true;
+}
+
+/* Returns false on timeout rather than raising, because the caller has DMA
+ * channels and peripheral request lines to switch off first: raising from here
+ * would leave a channel armed and writing into a buffer the GC is free to
+ * reuse. */
+static bool machine_spi_transfer_dma(machine_spi_obj_t *self, size_t len,
+    const uint8_t *src, uint8_t *dest) {
+    SPI_TypeDef *spi = self->spi;
+    bool ok = true;
+
+    RCC_HBPeriphClockCmd(RCC_HBPeriph_DMA1, ENABLE);
+    DMA_MuxChannelConfig(SPI_DMA_TX_MUX, SPI_DMA_TX_REQ(self->id));
+    DMA_MuxChannelConfig(SPI_DMA_RX_MUX, SPI_DMA_RX_REQ(self->id));
+    NVIC_EnableIRQ(SPI_DMA_TX_IRQN);
+    NVIC_EnableIRQ(SPI_DMA_RX_IRQN);
+
+    while (len != 0 && ok) {
+        uint16_t n = len > SPI_DMA_MAX_LEN ? SPI_DMA_MAX_LEN : (uint16_t)len;
+
+        DMA_Cmd(SPI_DMA_TX, DISABLE);
+        DMA_Cmd(SPI_DMA_RX, DISABLE);
+        DMA1->INTFCR = SPI_DMA_TX_FLAGS | SPI_DMA_RX_FLAGS;
+
+        /* Every field this leaves zero is already the wanted default: single
+         * buffer, normal (non-circular) mode, byte to byte, not memory to
+         * memory. DATAR does not move, so the peripheral address never
+         * increments either. */
+        DMA_InitTypeDef init = {0};
+        init.DMA_PeripheralBaseAddr = (uint32_t)&spi->DATAR;
+        init.DMA_PeripheralInc = DMA_PeripheralInc_Disable;
+        init.DMA_BufferSize = n;
+
+        if (dest != NULL) {
+            /* Receive outranks transmit: a byte collected late is lost, while a
+             * byte loaded late only leaves SCK idle for a moment. */
+            init.DMA_DIR = DMA_DIR_PeripheralSRC;
+            init.DMA_Memory0BaseAddr = (uint32_t)dest;
+            init.DMA_MemoryInc = DMA_MemoryInc_Enable;
+            init.DMA_Priority = DMA_Priority_VeryHigh;
+            DMA_Init(SPI_DMA_RX, &init);
+        }
+
+        /* read() and readinto() hand the same buffer in as both source and
+         * destination. That is safe without a copy: a byte has to be loaded
+         * into DATAR before it can be shifted out, and the byte it exchanges
+         * only lands two byte-times later, so the transmit side is always at
+         * least two positions ahead of the receive side overwriting it. */
+        init.DMA_DIR = DMA_DIR_PeripheralDST;
+        init.DMA_Memory0BaseAddr = src != NULL
+            ? (uint32_t)src : (uint32_t)&machine_spi_idle_byte;
+        init.DMA_MemoryInc = src != NULL
+            ? DMA_MemoryInc_Enable : DMA_MemoryInc_Disable;
+        init.DMA_Priority = DMA_Priority_High;
+        DMA_Init(SPI_DMA_TX, &init);
+
+        machine_spi_drain(spi);
+
+        /* Arm the receiver before anything can be received. WCH's example
+         * enables the transmit side first, which at these clocks is a byte
+         * lost: the first one can complete before the receive channel is
+         * listening. */
+        DMA_Channel_TypeDef *watch = SPI_DMA_TX;
+        if (dest != NULL) {
+            /* A completion left pending in the NVIC by an abandoned transfer
+             * would run the handler the moment this is enabled, clearing the
+             * TCIE that has just been set. The transfer would still finish, but
+             * nothing would wake the wait, so it would crawl at SysTick's 1 ms
+             * instead of ending when the last byte lands. */
+            NVIC_ClearPendingIRQ(SPI_DMA_RX_IRQN);
+            DMA_ITConfig(SPI_DMA_RX, DMA_IT_TC, ENABLE);
+            DMA_Cmd(SPI_DMA_RX, ENABLE);
+            SPI_I2S_DMACmd(spi, SPI_I2S_DMAReq_Rx, ENABLE);
+            watch = SPI_DMA_RX;
+        } else {
+            NVIC_ClearPendingIRQ(SPI_DMA_TX_IRQN);
+            DMA_ITConfig(SPI_DMA_TX, DMA_IT_TC, ENABLE);
+        }
+        SPI_I2S_DMACmd(spi, SPI_I2S_DMAReq_Tx, ENABLE);
+        DMA_Cmd(SPI_DMA_TX, ENABLE);
+
+        ok = machine_spi_dma_wait(watch);
+
+        SPI_I2S_DMACmd(spi, SPI_I2S_DMAReq_Tx, DISABLE);
+        SPI_I2S_DMACmd(spi, SPI_I2S_DMAReq_Rx, DISABLE);
+        DMA_ITConfig(SPI_DMA_TX, DMA_IT_TC, DISABLE);
+        DMA_ITConfig(SPI_DMA_RX, DMA_IT_TC, DISABLE);
+        DMA_Cmd(SPI_DMA_TX, DISABLE);
+        DMA_Cmd(SPI_DMA_RX, DISABLE);
+
+        len -= n;
+        if (src != NULL) {
+            src += n;
+        }
+        if (dest != NULL) {
+            dest += n;
+        }
+    }
+    return ok;
+}
+
+/* Write-only, and short enough that setting two DMA channels up would cost more
+ * than the bytes do. Nothing is going to look at what came back, so let the
+ * receive buffer overrun: OVR stops the receive path updating but transmission
+ * carries on, and machine_spi_drain() clears it before the next transfer. */
+static bool machine_spi_transfer_polled(machine_spi_obj_t *self, size_t len,
+    const uint8_t *src) {
+    for (size_t i = 0; i < len; i++) {
+        if (machine_spi_wait(self, SPI_STATR_TXE) != 0) {
+            return false;
+        }
+        self->spi->DATAR = src != NULL ? src[i] : 0;
+    }
+    return true;
+}
+
 static void machine_spi_transfer(mp_obj_base_t *self_in, size_t len,
     const uint8_t *src, uint8_t *dest) {
     machine_spi_obj_t *self = (machine_spi_obj_t *)self_in;
     SPI_TypeDef *spi = self->spi;
 
-    /* Drain anything a previous aborted transfer left behind, so a stale byte
-     * cannot be handed back as if it belonged to this one. Reading DATAR is
-     * what clears RXNE; reading STATR afterwards clears OVR. */
-    if (spi->STATR & SPI_STATR_RXNE) {
-        (void)spi->DATAR;
+    if (len == 0) {
+        return;
     }
-    (void)spi->STATR;
 
-    if (dest == NULL) {
-        /* Write-only. Nothing is going to look at the received bytes, so let
-         * them overrun: OVR affects only the receive buffer, transmission
-         * carries on regardless, and the prologue above clears it before the
-         * next transfer. Halving the per-byte work buys no extra throughput at
-         * rates the full-duplex path already keeps up with -- both reach the
-         * line rate -- but it is what lets write() keep working at HCLK/2,
-         * where collecting each byte in time is impossible. */
-        for (size_t i = 0; i < len; i++) {
-            if (machine_spi_wait(self, SPI_STATR_TXE) != 0) {
-                mp_raise_OSError(MP_ETIMEDOUT);
-            }
-            spi->DATAR = src != NULL ? src[i] : 0;
-        }
+    /* Anything that has to be received goes through DMA however short it is.
+     * The alternative would be a length at which a read starts working, which
+     * is the worst kind of limit to document: polling cannot collect bytes at
+     * the top of this peripheral's range at any length. Writes have no such
+     * constraint -- an overrun costs a write nothing -- so short ones take the
+     * cheaper path. The crossover was measured at about 24 bytes. */
+    bool ok;
+    if (dest != NULL || len >= SPI_DMA_MIN_LEN) {
+        ok = machine_spi_transfer_dma(self, len, src, dest);
     } else {
-        /* Full duplex. Keep one byte in flight ahead of the one being
-         * collected: the transmit buffer is one deep, so loading the next byte
-         * while the current one is still shifting is what keeps SCK running
-         * continuously instead of stalling for a round trip per byte.
-         *
-         * Never more than one ahead, though. The receive buffer is also one
-         * deep, and a second completed byte arriving before the first is read
-         * sets OVR and discards it. */
-        size_t tx = 0, rx = 0;
-        uint64_t deadline = mp_hal_ticks_us() + SPI_TIMEOUT_US;
-        while (rx < len) {
-            /* An overrun here is not a transient glitch to be retried: the
-             * received byte is gone, and until OVR is cleared the receive
-             * buffer stops updating altogether, so the loop below would wait
-             * for an RXNE that can never arrive and report a timeout instead
-             * of the real cause. It means the bus is clocking faster than this
-             * CPU can collect bytes -- at HCLK/2 a byte is 160 ns, which no
-             * polling loop reaching across the bus matrix can service. Clear
-             * it (read DATAR, then STATR) and say so. */
-            if (spi->STATR & SPI_STATR_OVR) {
-                (void)spi->DATAR;
-                (void)spi->STATR;
-                mp_raise_msg(&mp_type_OSError, MP_ERROR_TEXT(
-                    "SPI receive overrun: baudrate too high for full duplex"));
-            }
-            if (tx < len && tx - rx < 2 && (spi->STATR & SPI_STATR_TXE)) {
-                /* SPI.write() passes no source buffer; send zeros then, which
-                 * is also what SPI.read() defaults to sending. */
-                spi->DATAR = src != NULL ? src[tx] : 0;
-                tx++;
-                deadline = mp_hal_ticks_us() + SPI_TIMEOUT_US;
-            }
-            if (spi->STATR & SPI_STATR_RXNE) {
-                dest[rx] = (uint8_t)spi->DATAR;
-                rx++;
-                deadline = mp_hal_ticks_us() + SPI_TIMEOUT_US;
-            }
-            if (mp_hal_ticks_us() > deadline) {
-                mp_raise_OSError(MP_ETIMEDOUT);
-            }
-        }
+        machine_spi_drain(spi);
+        ok = machine_spi_transfer_polled(self, len, src);
     }
 
     /* Do not return while SCK is still moving: the caller's next act is
-     * usually to raise CS, and doing that mid-byte truncates the frame. */
+     * usually to raise CS, and doing that mid-byte truncates the frame. The
+     * transmit DMA finishes one byte early for the same reason -- its last
+     * write only reaches DATAR, not the wire. */
     uint64_t deadline = mp_hal_ticks_us() + SPI_TIMEOUT_US;
-    while (spi->STATR & SPI_STATR_BSY) {
+    while (ok && (spi->STATR & SPI_STATR_BSY)) {
         if (mp_hal_ticks_us() > deadline) {
-            mp_raise_OSError(MP_ETIMEDOUT);
+            ok = false;
         }
+    }
+
+    if (!ok) {
+        mp_raise_OSError(MP_ETIMEDOUT);
     }
 }
 
@@ -480,6 +646,10 @@ static void machine_spi_init(mp_obj_base_t *self_in, size_t n_args,
 
 static void machine_spi_deinit(mp_obj_base_t *self_in) {
     machine_spi_obj_t *self = (machine_spi_obj_t *)self_in;
+    /* Drop the request lines before the clock: a peripheral left asking for DMA
+     * would drive whichever bus claimed those two channels next. */
+    SPI_I2S_DMACmd(self->spi, SPI_I2S_DMAReq_Tx, DISABLE);
+    SPI_I2S_DMACmd(self->spi, SPI_I2S_DMAReq_Rx, DISABLE);
     SPI_Cmd(self->spi, DISABLE);
     /* The pins keep their alternate function. Handing them back as inputs
      * would drop SCK and CS-adjacent lines to whatever the board pulls them

@@ -290,42 +290,49 @@ but it means `print(spi)` is the only reliable answer at low rates. Use
 Only `bits=8` is supported. The peripheral can do 16-bit words, but with a byte
 order the buffer protocol does not describe, so exposing it would be a trap.
 
-Throughput reaches the line rate — the software loop is not the bottleneck.
-Writing 64 KB:
+**Every rate runs at the line rate, in both directions, because transfers go
+through DMA.** Measured over 64 KB:
 
-| SCK | `write` | `write_readinto` | `readinto` |
+| SCK | `write` | `readinto` | `write_readinto` |
 |---|---|---|---|
-| 781 kHz | 781 kb/s (100%) | 781 kb/s (100%) | 780 kb/s (100%) |
-| 3.125 MHz | 3121 kb/s (100%) | 3139 kb/s (100%) | 3121 kb/s (100%) |
-| 12.5 MHz | 12483 kb/s (100%) | 12483 kb/s (100%) | 12193 kb/s (98%) |
+| 3.125 MHz | 390 kB/s (99%) | 390 kB/s (99%) | 390 kB/s (99%) |
+| 12.5 MHz | 1562 kB/s (99%) | 1557 kB/s (99%) | 1561 kB/s (99%) |
+| 25 MHz | 3123 kB/s (99%) | 3104 kB/s (99%) | 3122 kB/s (99%) |
+| 50 MHz | 6242 kB/s (99%) | 6168 kB/s (98%) | 6240 kB/s (99%) |
 
-Two things get that: the full-duplex path keeps one byte in flight ahead of the
-one being collected, so SCK does not stall for a round trip per byte, and
-`write()` skips the receive side entirely. The latter is safe because `OVR`
-affects only the receive buffer — transmission carries on — and the next
-transfer clears it.
+A polling loop cannot do this, and no amount of tuning would have let it. At
+`HCLK/2` a byte is 160 ns while one register access across the bus matrix costs
+about 200 ns, so the CPU is beaten by the peripheral it is feeding. Polling
+measured 1586 kB/s writing and 570 kB/s full duplex — flat ceilings that did not
+move with the prescaler — and above 6.25 MHz full duplex lost bytes outright and
+raised `OSError: SPI receive overrun`. Both limits are gone.
 
-Because the loop already saturates the bus, neither DMA nor a per-byte
-interrupt would make this faster at any rate up to 25 MHz. Interrupts would be
-slower (an ISR costs more than the 640 ns byte time at 12.5 MHz), and DMA
-cannot reach the GC heap at all: the heap lives in DTCM, which no DMA engine on
-this part can address — the same constraint that gives USB its own buffer in
-the shared region. DMA would therefore need a bounce buffer and a copy through
-memory running at HCLK.
+DMA reaches every memory region on this part, so no bounce buffer is involved
+and a `bytes` literal in flash transmits as directly as a `bytearray` on the
+heap. (An earlier revision of this file claimed DMA could not address the GC
+heap in DTCM. That is true of the *USB* controller's bus master, which is why
+USB has its own buffer in the shared region, and not of DMA1/DMA2 — the
+reference manual gives them their own permission bits, enabled from reset, and
+a memory-to-memory transfer inside the heap confirms it.)
 
-**Full duplex is limited to 25 MHz.** At 50 MHz (`HCLK/2`) a byte is 160 ns,
-which is shorter than the CPU takes to collect one, so the receive buffer
-overruns and stops updating. `write()` is unaffected — there is nothing to
-collect — but `read()`, `readinto()` and `write_readinto()` raise
-`OSError: SPI receive overrun: baudrate too high for full duplex` rather than
-returning data that silently has holes in it.
+The core **sleeps** for the duration of a transfer rather than spinning: the
+waiting loop idles in `WFI` and the channel's transfer-complete interrupt wakes
+it. At 390 kHz a full buffer is over a second that no longer runs the CPU flat
+out.
+
+Writes shorter than 16 bytes still go out through a short polled loop, because
+arming two DMA channels costs about 3 µs and at that length it is not worth it.
+Anything that receives always uses DMA, however short, so that a read does not
+have a length below which it starts failing.
 
 Creating a `SoftSPI` on SPI1's pins reconfigures them to plain GPIO and
 disconnects the hardware peripheral, exactly as `SoftI2C` does. Re-create the
 `SPI` object to take them back.
 
-`test_spi.py` verifies all of this against a BMP280/BME280, and skips when
-nothing is attached.
+`test_spi.py` verifies the protocol side against a BMP280/BME280 and skips when
+nothing is attached. `test_spi_dma.py` checks the throughput, the chunking of
+buffers longer than a DMA counter, and the short-transfer path; it needs no
+device, and picks up a MOSI-to-MISO loopback wire if one is fitted.
 
 ## PWM
 
