@@ -73,7 +73,13 @@ time; claiming a line another port holds raises `ValueError` rather than
 silently retargeting it. `hard=True` runs the handler in the ISR.
 
 Nothing stops you configuring PA9/PA10 (REPL), PA11/PA12 (USB) or PB8/PB9
-(SWCLK/SWDIO) — driving the last pair will drop the debugger.
+(SWCLK/SWDIO). The debug probe holds that last pair while it is attached, so
+a peripheral pointed at them configures perfectly and the pin never moves —
+which looks exactly like a broken driver until you notice which pins they are.
+
+**PB0 and PB1 are tied together on this dev board.** Found by driving each
+candidate pin low in turn with every other pin pulled up: no other pair on the
+headers is connected. Drive only one of them, or they fight.
 
 ## I2C
 
@@ -242,6 +248,55 @@ disconnects the hardware peripheral, exactly as `SoftI2C` does. Re-create the
 
 `test_spi.py` verifies all of this against a BMP280/BME280, and skips when
 nothing is attached.
+
+## PWM
+
+    from machine import PWM, Pin
+    p = PWM(Pin("PB0"), freq=1000, duty_u16=32768)   # 1 kHz, 50 %
+    p.freq(50)
+    p.duty_ns(1_500_000)                             # a servo at mid travel
+    p.deinit()
+
+The standard API: `freq()`, `duty_u16()`, `duty_ns()`, `init()`, `deinit()`
+and `invert=`. **67 of the 95 pins** have a timer output; the rest reach a
+timer only through ETR or BKIN, which are inputs, and raise `ValueError`.
+
+Ten timers drive them — TIM1 and TIM8 (advanced), TIM2–TIM5, and TIM9–TIM12,
+which on this part have four channels each rather than the two their STM32
+namesakes have. TIM6 and TIM7 have no output pins at all.
+
+Timers run from **HCLK, 100 MHz**, giving 1 Hz to 50 MHz. The prescaler is
+kept as small as the period allows, because the period is also the duty
+resolution: at 1 kHz the counter runs to 50000, so `duty_u16` is exact to
+about a part in 50000.
+
+Most pins reach two or three timers and the driver picks one — preferring a
+timer already running at the frequency you asked for, then an idle timer, then
+any free channel. Pass `timer=N` to choose, which is what you want when two
+outputs need unrelated frequencies:
+
+    a = PWM(Pin("PB0"), freq=1000)              # picks TIM3
+    b = PWM(Pin("PC6"), freq=2000, timer=8)     # TIM3_CH1 would have moved a
+
+**The frequency belongs to the timer, not the channel.** `freq()` on one
+channel moves every other channel of that timer — the same caveat every port
+carries. What this port adds is that the other channels keep their duty across
+the change rather than being silently rescaled.
+
+Pins named `TIMx_CHyN` in the datasheet are the complementary half of a
+channel. They work, and `duty_u16` means the same fraction-of-time-high there
+as anywhere else, which is what makes PA5, PB13, PE8, PE10 and PE12 usable at
+all. Each `(timer, channel)` pair takes one PWM object, so a `CHy` and its
+`CHyN` cannot be driven separately — they share a compare register.
+
+A soft reset stops every output and releases its pin. So does `deinit()`,
+which hands the pin back as a floating input rather than leaving it parked at
+whatever level the last compare produced.
+
+`test_pwm.py` checks all of this by measuring the waveform with
+`time_pulse_us()` on the pin that is generating it — the pad's input buffer
+stays live in alternate-function mode — rather than by reading back the
+registers it just wrote.
 
 ## Frozen modules
 

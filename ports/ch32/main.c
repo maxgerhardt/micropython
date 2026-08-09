@@ -21,6 +21,7 @@
 #include "flash.h"
 #include "usbd.h"
 #include "machine_pin.h"
+#include "machine_pwm.h"
 #include "mphalport.h"
 
 #ifndef MICROPY_HW_ITCM_HOT_CODE
@@ -152,6 +153,14 @@ int main(void) {
         /* Silence pin interrupts before the heap holding their handlers is
          * reclaimed, so a stray edge cannot dispatch into freed memory. */
         machine_pin_deinit();
+
+        /* Stop the PWM outputs too. The timers keep running on their own once
+         * started, so without this a soft reset would leave a servo or a motor
+         * driver at whatever duty the program that just exited had set, with
+         * every PWM object that knew about it already collected. */
+        #if MICROPY_PY_MACHINE_PWM
+        machine_pwm_deinit_all();
+        #endif
 
         mp_printf(&mp_plat_print, "MPY: soft reboot\n");
         mp_deinit();

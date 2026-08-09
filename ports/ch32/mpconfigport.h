@@ -84,6 +84,12 @@
 #define MICROPY_PY_MACHINE_SPI          (1)
 #define MICROPY_PY_MACHINE_SOFTSPI      (1)
 
+/* PWM on the ten timers that have output pins (TIM1-TIM5, TIM8-TIM12; TIM6
+ * and TIM7 have none). ports/ch32/machine_pwm.c owns the pin-to-channel table
+ * and picks a timer for the pin unless one is named. */
+#define MICROPY_PY_MACHINE_PWM          (1)
+#define MICROPY_PY_MACHINE_PWM_INCLUDEFILE "ports/ch32/machine_pwm.c"
+
 /* ADC1, single conversion on demand. read_uv() is exposed because the raw
  * 16-bit reading is meaningless without knowing the reference. */
 #define MICROPY_PY_MACHINE_ADC          (1)
