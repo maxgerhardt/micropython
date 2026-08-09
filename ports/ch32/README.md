@@ -155,6 +155,41 @@ two agree to within **4 mV**:
 | 3072 | 2475 mV | 2479 mV |
 | 4095 | 3300 mV | 3298 mV |
 
+## Watchdog
+
+    from machine import WDT
+    w = WDT(timeout=5000)     # 1 ms to 26 s
+    w.feed()
+
+    import machine
+    if machine.reset_cause() == machine.WDT_RESET:
+        print("the watchdog fired last time")
+
+`WDT(0)` is the independent watchdog (IWDG). It runs from the LSI, its own RC
+oscillator, so it keeps counting even if the PLL drops out or the code that
+was feeding it has stopped the bus clock. Once started it cannot be stopped —
+not by `deinit()`, not by a soft reset, only by the reset it eventually
+causes.
+
+The LSI is an uncalibrated RC oscillator: the datasheet gives **25–60 kHz**,
+and this port sizes the reload for a nominal 40 kHz. So a nominal timeout is
+only good to about a factor of two across parts and temperature. Measured on
+this board against the host clock, timing two different timeouts and
+differencing them to cancel the boot overhead, the LSI is **41 kHz** — a 1 s
+watchdog fires at 0.98 s and a 3 s one at 2.92 s. Leave margin.
+
+**The window watchdog is deliberately not exposed.** WWDG counts HCLK/4096
+through seven bits, so its whole range is 0.04 to 20.6 ms, and that ceiling is
+hardware rather than a configuration choice. Measured here, a Python loop
+calling `feed()` every 10 ms still misses the deadline, because a sleep plus
+the USB poll in the VM hook can overshoot 20 ms. A watchdog that resets a
+healthy board is worse than no watchdog.
+
+`machine.reset_cause()` is real now rather than a stub, returning
+`PWRON_RESET`, `HARD_RESET`, `WDT_RESET` or `SOFT_RESET`. The RCC flags
+accumulate across resets, so they are read and cleared once at startup —
+reading them later would report every reason since power-on.
+
 ## DAC
 
     from machine import DAC, Pin

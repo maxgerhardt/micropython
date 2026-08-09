@@ -23,6 +23,7 @@
 #include "machine_pin.h"
 #include "machine_dac.h"
 #include "machine_pwm.h"
+#include "machine_wdt.h"
 #include "mphalport.h"
 
 #ifndef MICROPY_HW_ITCM_HOT_CODE
@@ -109,6 +110,9 @@ int main(void) {
     SystemInit();
     #endif
     SystemAndCoreClockUpdate();
+
+    /* Read the RCC reset flags before anything else can clear them. */
+    machine_wdt_reset_cause_init();
 
     mp_hal_init();
     uart_init(MICROPY_HW_UART_REPL_BAUD);
