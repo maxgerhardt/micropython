@@ -24,6 +24,14 @@
 #define MICROPY_PY_ARRAY_SLICE_ASSIGN   (1)
 #define MICROPY_PY_BUILTINS_BYTES_HEX   (1)
 
+// str is UTF-8 rather than a byte string. Defaults to BASIC_FEATURES, so it
+// was off: print("25\u00b0C") put a lone 0xb0 on the wire and any terminal
+// expecting UTF-8 dropped the degree sign. With this on, the same literal is
+// two bytes on the wire and arrives intact, len() counts characters rather
+// than bytes, and indexing a string with non-ASCII in it stops splitting
+// characters in half.
+#define MICROPY_PY_BUILTINS_STR_UNICODE (1)
+
 #define MICROPY_ALLOC_PATH_MAX          (256)
 #define MICROPY_ENABLE_GC               (1)
 #define MICROPY_ENABLE_PYSTACK          (0)

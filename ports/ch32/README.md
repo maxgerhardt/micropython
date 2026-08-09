@@ -250,6 +250,12 @@ they import on a board whose filesystem has just been erased:
 
     dht         DHT11/DHT22 driver, the Python half of machine.dht_readinto()
 
+`DHT11.temperature()` returns a whole number because the sensor sends one:
+the frame carries a fraction byte after each of humidity and temperature, and
+this part transmits `0f 00 19 00 28` — 15 %RH, 25 °C, both fractions zero,
+checksum `0x28`. There is no half-degree to recover. `DHT22`/AM2302 uses
+those bytes and reads to 0.1 °C.
+
 Add more with `require("<name>")` for anything in `lib/micropython-lib`, or
 `module("foo.py")` for a file of your own; a board can point `FROZEN_MANIFEST`
 at its own manifest from `mpconfigboard.mk`.
@@ -259,6 +265,25 @@ build does not track — `py/frozenmod.c` compiles to an empty object without
 `MICROPY_MODULE_FROZEN_MPY` and the link then fails on
 `mp_find_frozen_module`. Run `make clean` after adding or removing
 `FROZEN_MANIFEST`; editing the manifest itself needs no clean.
+
+## Text
+
+`str` is UTF-8 (`MICROPY_PY_BUILTINS_STR_UNICODE`), so `print("25°C")` puts
+the two bytes `c2 b0` on the wire and `len()` counts characters. That is
+above this port's `CORE_FEATURES` ROM level and is enabled deliberately: with
+it off a degree sign left the board as a lone `0xb0`, which any terminal
+expecting UTF-8 simply drops.
+
+**Non-ASCII cannot be typed at the REPL.** The line editor ignores every byte
+outside 32–126 (`shared/readline/readline.c`), because its cursor arithmetic
+counts bytes and would otherwise walk into the middle of a character. This is
+upstream behaviour, not specific to this port. At the REPL, type the escape
+instead:
+
+    >>> print("25\u00b0C")
+    25°C
+
+In a `.py` file the character itself works; only the line editor is affected.
 
 ## Memory layout
 
