@@ -10,6 +10,10 @@
  * code needs the mp_hal_pin_* API without pulling in modmachine. */
 #include "machine_pin.h"
 
+/* machine.DAC is a whole class defined in its own file, so it needs its type
+ * object here to be reachable from the module globals below. */
+#include "machine_dac.h"
+
 /* --- module-level hooks required by extmod/modmachine.c --- */
 
 static void mp_machine_idle(void) {
@@ -64,4 +68,5 @@ static mp_int_t mp_machine_reset_cause(void) {
 
 #define MICROPY_PY_MACHINE_EXTRA_GLOBALS \
     { MP_ROM_QSTR(MP_QSTR_Pin), MP_ROM_PTR(&machine_pin_type) }, \
+    { MP_ROM_QSTR(MP_QSTR_DAC), MP_ROM_PTR(&machine_dac_type) }, \
     { MP_ROM_QSTR(MP_QSTR_dht_readinto), MP_ROM_PTR(&dht_readinto_obj) },

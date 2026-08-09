@@ -155,6 +155,49 @@ two agree to within **4 mV**:
 | 3072 | 2475 mV | 2479 mV |
 | 4095 | 3300 mV | 3298 mV |
 
+## DAC
+
+    from machine import DAC, Pin
+    d = DAC(1)              # or DAC(Pin("PA4"))
+    d.write(2048)           # 12 bits, 0-4095 -> 0 to 3.3 V
+    d.write_uv(1650000)     # or say it in microvolts
+    d.deinit()
+
+Two independent 12-bit converters with their own output amplifiers, on **fixed
+pins** — there is no mux to move them:
+
+| | Pin | ADC channel on the same pin |
+|---|---|---|
+| `DAC(1)` | **PA4** | IN4 |
+| `DAC(2)` | **PA5** | IN5 |
+
+Both are in the 3.3 V supply domain. The amplifier is enabled, so the output
+drives a 5 kΩ load; unlike the STM32 part, this one is near rail to rail with
+the buffer on (datasheet: 0–8 mV at code 0, 3.29–3.3 V at code 4095).
+
+`write_uv()` is not part of the `machine.DAC` API. It is here because this
+port's ADC has `read_uv()`, and a converter whose full scale is only implied
+by its bit count is awkward to use against one that reports volts.
+
+A soft reset disables both channels. Otherwise the pin would hold its last
+voltage indefinitely, with the `DAC` object that set it already collected.
+
+Measured against the on-chip ADC with PA4 wired to PA6 (`test_dac.py`), the
+two agree to **1.6 mV worst case** across the range:
+
+| code | expected | measured |
+|---|---|---|
+| 0 | 0 mV | 0 mV |
+| 256 | 206.3 mV | 204.7 mV |
+| 1024 | 825.2 mV | 826.0 mV |
+| 2048 | 1650.4 mV | 1650.4 mV |
+| 3072 | 2475.6 mV | 2476.4 mV |
+| 4095 | 3300.0 mV | 3299.2 mV |
+
+Both converters share a reference, so this shows linearity and monotonicity
+rather than absolute accuracy — a common reference error would cancel. The
+MCP4725 comparison in `test_adc.py` is what pins the absolute scale down.
+
 ## SPI
 
     from machine import SPI, Pin

@@ -26,6 +26,7 @@ SDK_SRC_C := \
 	$(SDK)/Peripheral/ch32h417/src/ch32h417_spi.c \
 	$(SDK)/Peripheral/ch32h417/src/ch32h417_adc.c \
 	$(SDK)/Peripheral/ch32h417/src/ch32h417_tim.c \
+	$(SDK)/Peripheral/ch32h417/src/ch32h417_dac.c \
 	$(SDK)/Peripheral/ch32h417/src/ch32h417_usart.c \
 	$(SDK)/Peripheral/ch32h417/src/ch32h417_flash.c \
 	$(SDK)/Peripheral/ch32h417/src/ch32h417_pwr.c \

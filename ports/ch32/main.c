@@ -21,6 +21,7 @@
 #include "flash.h"
 #include "usbd.h"
 #include "machine_pin.h"
+#include "machine_dac.h"
 #include "machine_pwm.h"
 #include "mphalport.h"
 
@@ -161,6 +162,10 @@ int main(void) {
         #if MICROPY_PY_MACHINE_PWM
         machine_pwm_deinit_all();
         #endif
+
+        /* Same for the analog outputs, which otherwise hold their last voltage
+         * indefinitely. */
+        machine_dac_deinit_all();
 
         mp_printf(&mp_plat_print, "MPY: soft reboot\n");
         mp_deinit();

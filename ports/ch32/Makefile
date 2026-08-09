@@ -80,6 +80,7 @@ SRC_C += \
 	machine_pin.c \
 	machine_i2c.c \
 	machine_spi.c \
+	machine_dac.c \
 	drivers/bus/softspi.c \
 	drivers/dht/dht.c \
 	usbd.c \
