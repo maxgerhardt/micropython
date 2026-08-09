@@ -18,6 +18,10 @@ QSTR_DEFS = qstrdefsport.h
 MICROPY_ROM_TEXT_COMPRESSION ?= 1
 MICROPY_FLOAT_IMPL ?= float
 
+# Frozen modules. Must be set before py.mk, which includes py/manifest.mk.
+# A board can override this by setting FROZEN_MANIFEST in its mpconfigboard.mk.
+FROZEN_MANIFEST ?= boards/manifest.py
+
 # Must be set before extmod.mk, which adds lib/oofatfs to SRC_THIRDPARTY_C when
 # it sees this. Adding those sources to SRC_C by hand instead would drag them
 # into SRC_QSTR, and the qstr preprocessor pass chokes on ff.c's token pasting.

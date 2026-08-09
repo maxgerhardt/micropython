@@ -9,6 +9,10 @@ decoded as forty zero bits -- which is especially nasty because an all-zero
 DHT11 frame passes its own checksum (0+0+0+0 == 0). So this test rejects an
 all-zero frame explicitly rather than trusting the checksum alone.
 
+It also checks that micropython-lib's dht.py is frozen into the firmware and
+works, since that is what a user reaches for and a reflash leaves nothing on
+the filesystem.
+
 DHT11s are unreliable by nature: a fraction of reads time out no matter what
 the host does. The pass criterion is therefore "most reads work", not "all".
 
@@ -37,8 +41,8 @@ present = PIN.value() == 1
 print("PRESENT", present)
 
 if present:
-    # Deliberately not micropython-lib's dht.py: this drives machine.dht_readinto
-    # directly so the test needs nothing on the filesystem, which a reflash wipes.
+    # The low-level half first: machine.dht_readinto directly, so a failure here
+    # points at the C driver and the timebase rather than at anything Python.
     buf = bytearray(5)
 
     good = 0
@@ -71,6 +75,37 @@ if present:
             fail.append("temperature %d out of the DHT11 range" % temp)
         if not (0 <= hum <= 100):
             fail.append("humidity %d out of range" % hum)
+
+    # And the module a user actually reaches for. dht.py is frozen into the
+    # firmware rather than installed, so this has to work on a board whose
+    # filesystem was just erased by a reflash -- which is the state this test
+    # runs in. Importing it off the filesystem instead would still pass, so
+    # check where it came from as well.
+    import os as _os
+
+    if "dht.py" in _os.listdir("/"):
+        fail.append("dht.py is on the filesystem, so this proves nothing")
+    try:
+        import dht
+    except ImportError:
+        fail.append("dht module is not frozen into the firmware")
+        dht = None
+
+    if dht is not None:
+        d = dht.DHT11(PIN)
+        ok = False
+        for i in range(4):
+            time.sleep_ms(2000)
+            try:
+                d.measure()
+            except Exception:
+                # OSError on timeout, a bare Exception on a bad checksum.
+                continue
+            ok = True
+            print("dht module: %d C, %d %% RH" % (d.temperature(), d.humidity()))
+            break
+        if not ok:
+            fail.append("frozen dht module never completed a reading")
 
 print("FAILURES:", fail)
 """

@@ -243,6 +243,23 @@ disconnects the hardware peripheral, exactly as `SoftI2C` does. Re-create the
 `test_spi.py` verifies all of this against a BMP280/BME280, and skips when
 nothing is attached.
 
+## Frozen modules
+
+`boards/manifest.py` lists the Python modules compiled into the firmware, so
+they import on a board whose filesystem has just been erased:
+
+    dht         DHT11/DHT22 driver, the Python half of machine.dht_readinto()
+
+Add more with `require("<name>")` for anything in `lib/micropython-lib`, or
+`module("foo.py")` for a file of your own; a board can point `FROZEN_MANIFEST`
+at its own manifest from `mpconfigboard.mk`.
+
+Changing whether the port freezes anything at all changes `CFLAGS`, which the
+build does not track — `py/frozenmod.c` compiles to an empty object without
+`MICROPY_MODULE_FROZEN_MPY` and the link then fails on
+`mp_find_frozen_module`. Run `make clean` after adding or removing
+`FROZEN_MANIFEST`; editing the manifest itself needs no clean.
+
 ## Memory layout
 
 Only ITCM and DTCM are zero-wait at the V5F's 400 MHz core clock. The shared
