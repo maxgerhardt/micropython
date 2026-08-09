@@ -10,6 +10,7 @@
 static uint8_t stdin_ringbuf_array[MICROPY_HW_STDIN_BUFFER_LEN];
 ringbuf_t stdin_ringbuf = { stdin_ringbuf_array, sizeof(stdin_ringbuf_array) };
 
+#include "machine_rtc.h"
 #include "uart.h"
 #include "mphalport.h"
 
@@ -142,7 +143,18 @@ mp_uint_t mp_hal_ticks_cpu(void) {
     return (mp_uint_t)SysTick0->CNT;
 }
 
+/* Wall clock, which is what time.time() and time.localtime() are built on.
+ *
+ * The RTC counts seconds since 2000-01-01, which is exactly this port's epoch,
+ * so no conversion is needed -- see the epoch discussion in machine_rtc.c. The
+ * fallback to uptime is for the case where no oscillator would start at boot:
+ * the number is then wrong in an obvious way (it starts at 2000-01-01) rather
+ * than the calls failing. */
 uint64_t mp_hal_time_ns(void) {
+    uint32_t seconds, microseconds;
+    if (machine_rtc_get(&seconds, &microseconds)) {
+        return (uint64_t)seconds * 1000000000ull + (uint64_t)microseconds * 1000ull;
+    }
     return ticks_us64() * 1000ull;
 }
 

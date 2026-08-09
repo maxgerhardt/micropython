@@ -190,6 +190,56 @@ healthy board is worse than no watchdog.
 accumulate across resets, so they are read and cleared once at startup —
 reading them later would report every reason since power-on.
 
+## RTC
+
+    from machine import RTC
+    import time
+
+    rtc = RTC()                                     # LSE, already running
+    rtc.datetime((2026, 8, 9, 0, 14, 30, 0, 0))     # y, m, d, weekday, h, m, s, us
+    print(rtc.datetime())
+    print(time.localtime(), time.time())
+
+The clock is started at boot, so `time.time()` and `time.localtime()` work
+without creating an `RTC` object; creating one is how you set the date or pick a
+different oscillator. Element 3 of the tuple is the weekday, which is derived
+from the date rather than stored — the hardware has nowhere to keep it — and
+element 7 is microseconds within the second, read from the prescaler's divider.
+
+**No year 2038 problem.** The counter is 32 bits holding seconds since
+**2000-01-01**, unsigned, so it runs out in **2136**. WCH's own RTC example
+stores a Unix timestamp and converts it through a signed `time_t`, which is what
+breaks in 2038 ([openwch/ch32h417#11]). The signedness is the whole bug, and
+using MicroPython's own epoch means the number in the counter is exactly what
+`time.time()` returns, with no offset to get wrong. Dates outside 2000–2135
+raise `ValueError` rather than wrapping into a year the counter can hold.
+
+[openwch/ch32h417#11]: https://github.com/openwch/ch32h417/issues/11
+
+Three clock sources, chosen with `RTC(source=...)`:
+
+| Source | Rate | Measured error | Notes |
+|---|---|---|---|
+| `RTC.LSE` | 32768 Hz | +0.04% | **Default.** Divides to exactly one second. The only source in the backup domain, so the only one that keeps time when VDD33 goes away but VBAT does not. This board has the crystal (Y1, 12 pF caps, PC14/PC15). |
+| `RTC.LSI` | 40000 Hz nominal | **+3.2%** | Internal RC, needs no crystal. Specified only to 25–60 kHz, and measures 41.3 kHz here — so it gains about three quarters of an hour a day. Use it for elapsed time, not for a calendar. |
+| `RTC.HSE` | 48828 Hz | +0.05% | The 25 MHz crystal over 512, which is 48828.125 Hz and so not a whole number of ticks per second; the nearest divisor gains ~2.6 ppm, a fifth of a second a day. Stops with VDD33. |
+
+The measured column is against the host clock over 20 s, where the tolerance is
+set by the serial round trip rather than by the oscillator — see `test_rtc.py`.
+The LSI figure is real, though, and matches the 41.3 kHz measured independently
+while bringing up the watchdog.
+
+**Changing source resets the clock.** `RTCSEL` cannot be changed once written;
+only a backup-domain reset reopens it, and that clears the counter. Asking for
+the source already running keeps the time, which is what happens on every boot.
+
+The clock survives both soft and hard resets — verified to the second — because
+the backup domain is not reset by either. It does not survive removing power
+unless VBAT is held up.
+
+File timestamps come from here too: `get_fattime()` reports the RTC, so files
+written after the date is set carry it.
+
 ## DAC
 
     from machine import DAC, Pin
@@ -674,6 +724,6 @@ compiled from source with the same flags.
 
 ## Not yet implemented
 
-Ethernet, and the RV32 native emitter (which can be enabled
+Ethernet, RTC alarms, and the RV32 native emitter (which can be enabled
 later targeting plain RV32IMC — the core is a superset, so no `xw` support is
 needed in the emitter).

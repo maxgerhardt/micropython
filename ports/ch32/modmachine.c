@@ -13,6 +13,7 @@
 /* machine.DAC is a whole class defined in its own file, so it needs its type
  * object here to be reachable from the module globals below. */
 #include "machine_dac.h"
+#include "machine_rtc.h"
 #include "machine_wdt.h"
 
 /* --- module-level hooks required by extmod/modmachine.c --- */
@@ -72,6 +73,7 @@ static mp_int_t mp_machine_reset_cause(void) {
 #define MICROPY_PY_MACHINE_EXTRA_GLOBALS \
     { MP_ROM_QSTR(MP_QSTR_Pin), MP_ROM_PTR(&machine_pin_type) }, \
     { MP_ROM_QSTR(MP_QSTR_DAC), MP_ROM_PTR(&machine_dac_type) }, \
+    { MP_ROM_QSTR(MP_QSTR_RTC), MP_ROM_PTR(&machine_rtc_type) }, \
     { MP_ROM_QSTR(MP_QSTR_WDT), MP_ROM_PTR(&machine_wdt_type) }, \
     { MP_ROM_QSTR(MP_QSTR_PWRON_RESET), MP_ROM_INT(CH32_RESET_PWRON) }, \
     { MP_ROM_QSTR(MP_QSTR_HARD_RESET), MP_ROM_INT(CH32_RESET_HARD) }, \

@@ -36,8 +36,10 @@
 
 #include "py/runtime.h"
 #include "py/mperrno.h"
+#include "py/mphal.h"
 #include "extmod/vfs.h"
 #include "lib/oofatfs/ff.h"
+#include "shared/timeutils/timeutils.h"
 
 #include "flash.h"
 
@@ -140,19 +142,31 @@ bool ch32_flashbdev_flush(void) {
     return flash_cache_flush();
 }
 
-/* FatFS timestamp callback. The board has an RTC but nothing sets it, so a
- * fixed date is more honest than a counter that restarts at every boot and
- * makes files appear to travel backwards in time.
+/* FatFS timestamp callback, answered from the RTC.
  *
- * Planned: once Ethernet lands, sync the RTC over NTP and return the real time
- * from here. That is the point at which file timestamps become meaningful.
+ * This used to return a fixed date, on the grounds that nothing set the clock
+ * and a counter restarting at each boot would make files appear to travel
+ * backwards in time. machine.RTC removed that objection: the clock is started
+ * at boot and kept in the backup domain across resets, so timestamps are real
+ * whenever someone has set the date, and merely all-equal when nobody has.
  *
  * FAT packing: bits 31:25 year-1980, 24:21 month, 20:16 day,
- *              15:11 hour, 10:5 minute, 4:0 seconds/2. */
+ *              15:11 hour, 10:5 minute, 4:0 seconds/2 -- so two-second
+ *              resolution, and a year field that runs out in 2107 well before
+ *              the RTC counter does in 2136. Clamp rather than wrap: a date
+ *              beyond the field is better reported as its maximum than as
+ *              1980-something. */
 DWORD get_fattime(void) {
-    return ((DWORD)(2026 - 1980) << 25)   /* year  */
-           | ((DWORD)1 << 21)             /* month */
-           | ((DWORD)1 << 16);            /* day   */
+    timeutils_struct_time_t tm;
+    timeutils_seconds_since_epoch_to_struct_time(
+        (mp_uint_t)(mp_hal_time_ns() / 1000000000ull), &tm);
+    uint32_t year = tm.tm_year < 1980 ? 1980 : (tm.tm_year > 2107 ? 2107 : tm.tm_year);
+    return ((DWORD)(year - 1980) << 25)
+           | ((DWORD)tm.tm_mon << 21)
+           | ((DWORD)tm.tm_mday << 16)
+           | ((DWORD)tm.tm_hour << 11)
+           | ((DWORD)tm.tm_min << 5)
+           | ((DWORD)tm.tm_sec >> 1);
 }
 
 /* --- Python-visible block device --- */

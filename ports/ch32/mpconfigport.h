@@ -105,6 +105,20 @@
 // which call mp_hal_delay_ms/us and mp_hal_ticks_ms/us/cpu directly.
 #define MICROPY_PY_TIME                 (1)
 #define MICROPY_PY_TIME_TICKS           (1)
+/* time.time(), time.localtime() and friends, which come from the RTC via
+ * mp_hal_time_ns(). Off until there was a real clock to answer them: a
+ * time.time() that returns uptime is worse than one that is absent, because it
+ * looks like a wall clock. See machine_rtc.c, including why the counter runs
+ * out in 2136 rather than 2038. */
+#define MICROPY_PY_TIME_TIME_TIME_NS    (1)
+#define MICROPY_PY_TIME_GMTIME_LOCALTIME_MKTIME (1)
+#define MICROPY_PY_TIME_INCLUDEFILE     "ports/ch32/modtime.c"
+/* Dates past 2099. Off by default on 32-bit machines, where timeutils converts
+ * through a 32-bit intermediate referenced to 1970: adding the 946684800 second
+ * offset to a 2000-based timestamp then wraps, and 2134 reads back as 1997.
+ * The RTC counter itself runs to 2136, so without this the last two years of
+ * its range would silently report dates in the 1990s. */
+#define MICROPY_TIME_SUPPORT_Y2100_AND_BEYOND (1)
 
 // USB device: CDC console on the USBFS controller (PA11/PA12).
 /* The USB stack defers work with mp_sched_schedule_node, which needs this. */

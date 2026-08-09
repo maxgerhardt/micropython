@@ -54,57 +54,11 @@ spi.write_readinto(probe, back)
 loopback = bytes(back) == probe
 print("LOOPBACK", loopback)
 
-# --- throughput, which is the whole reason this file exists -----------------
-# Below 90% something is stalling SCK between bytes; polling managed 25% at
-# 50 MHz. Allow a little slack for the fixed per-call cost.
-N = 65536
-out = bytes(N)
-buf = bytearray(N)
-for req in (3125000, 6250000, 12500000, 25000000, 50000000):
-    spi = SPI(1, baudrate=req)
-    hz = int(str(spi).split("baudrate=")[1].split(",")[0])
-    for name in ("write", "readinto", "write_readinto"):
-        t = time.ticks_us()
-        if name == "write":
-            spi.write(out)
-        elif name == "readinto":
-            spi.readinto(buf)
-        else:
-            spi.write_readinto(out, buf)
-        us = time.ticks_diff(time.ticks_us(), t)
-        pct = (N * 8 * 100) // (hz * us // 1000000)
-        print("RATE %9d %-14s %4d%%" % (hz, name, pct))
-        check("%s at %d Hz reaches the line rate" % (name, hz), pct >= 90, True)
-
-# --- a buffer longer than the DMA counter -----------------------------------
-# CNTR is 16 bits, so anything past 65535 has to be split into several passes.
-# Off-by-one here would silently truncate or repeat a chunk.
-spi = SPI(1, baudrate=25000000)
-big = bytearray(70000)
-t = time.ticks_us()
-spi.readinto(big)
-us = time.ticks_diff(time.ticks_us(), t)
-# A chunking bug that stopped early would show up as a transfer far too quick.
-expect = len(big) * 8 * 1000000 // 25000000
-print("CHUNKED %d bytes in %d us (expected about %d)" % (len(big), us, expect))
-check("a transfer past 65535 bytes takes as long as it should",
-      expect < us < expect * 2, True)
-# The sweep below allocates pairs of buffers as large as this one, and the heap
-# is not big enough to hold those and these at once.
-del big, out, buf
-gc.collect()
-
-# --- the lengths that switch between the DMA and polled paths ---------------
-# Writes below 16 bytes are pushed out by hand, everything else goes through
-# DMA, and reads always do. Walk across the boundary, and across the 65535-byte
-# chunk boundary, at the slowest and fastest clocks: a path that only works at
-# one end of the range is the failure mode this driver actually had.
-#
-# The two buffers are allocated once at the largest size and used through
-# memoryview slices. Allocating a fresh pair per size instead exhausted the
-# heap at 65537 bytes, and comparing with bytes(dst) == bytes(src) would double
-# the cost again -- hence the tile-by-tile compare below, which never holds more
-# than one tile.
+# --- the two working buffers -------------------------------------------------
+# Allocated once, up front, and used through memoryview slices for every size
+# below. Allocating a fresh pair per size exhausted the heap at 65537 bytes, and
+# allocating them after the throughput run failed too -- 140 KB of contiguous
+# space is there at the start and fragmented by the time the run has finished.
 MAX = 70000
 TILE = bytes(((i * 37 + 13) & 0xFF) for i in range(251))
 
@@ -142,6 +96,48 @@ for spoil in (0, 250, 251, 65534, 65535, 65536, MAX - 1):
           matches_tile(dstbuf, MAX), False)
     dstbuf[spoil] = was
 
+# --- throughput, which is the whole reason this file exists -----------------
+# Below 90% something is stalling SCK between bytes; polling managed 25% at
+# 50 MHz. Allow a little slack for the fixed per-call cost.
+N = 65536
+out = memoryview(srcbuf)[:N]
+buf = memoryview(dstbuf)[:N]
+for req in (3125000, 6250000, 12500000, 25000000, 50000000):
+    spi = SPI(1, baudrate=req)
+    hz = int(str(spi).split("baudrate=")[1].split(",")[0])
+    for name in ("write", "readinto", "write_readinto"):
+        t = time.ticks_us()
+        if name == "write":
+            spi.write(out)
+        elif name == "readinto":
+            spi.readinto(buf)
+        else:
+            spi.write_readinto(out, buf)
+        us = time.ticks_diff(time.ticks_us(), t)
+        pct = (N * 8 * 100) // (hz * us // 1000000)
+        print("RATE %9d %-14s %4d%%" % (hz, name, pct))
+        check("%s at %d Hz reaches the line rate" % (name, hz), pct >= 90, True)
+
+# --- a buffer longer than the DMA counter -----------------------------------
+# CNTR is 16 bits, so anything past 65535 has to be split into several passes.
+# Off-by-one here would silently truncate or repeat a chunk.
+spi = SPI(1, baudrate=25000000)
+big = memoryview(dstbuf)[:MAX]
+t = time.ticks_us()
+spi.readinto(big)
+us = time.ticks_diff(time.ticks_us(), t)
+# A chunking bug that stopped early would show up as a transfer far too quick.
+expect = MAX * 8 * 1000000 // 25000000
+print("CHUNKED %d bytes in %d us (expected about %d)" % (MAX, us, expect))
+check("a transfer past 65535 bytes takes as long as it should",
+      expect < us < expect * 2, True)
+del big, out, buf
+
+# --- the lengths that switch between the DMA and polled paths ---------------
+# Writes below 16 bytes are pushed out by hand, everything else goes through
+# DMA, and reads always do. Walk across the boundary, and across the 65535-byte
+# chunk boundary, at the slowest and fastest clocks: a path that only works at
+# one end of the range is the failure mode this driver actually had.
 for hz in (390625, 12500000, 50000000):
     spi = SPI(1, baudrate=hz)
     got = int(str(spi).split("baudrate=")[1].split(",")[0])

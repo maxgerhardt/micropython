@@ -23,6 +23,7 @@
 #include "machine_pin.h"
 #include "machine_dac.h"
 #include "machine_pwm.h"
+#include "machine_rtc.h"
 #include "machine_wdt.h"
 #include "mphalport.h"
 
@@ -116,6 +117,10 @@ int main(void) {
 
     mp_hal_init();
     uart_init(MICROPY_HW_UART_REPL_BAUD);
+    /* After the timebase and the console, not before: starting the RTC waits on
+     * an oscillator with a timeout, and a timeout needs a clock to measure. Run
+     * ahead of mp_hal_init() it spun forever with no output at all. */
+    machine_rtc_init_boot();
     ch32_usbd_init();
 
     // Leave a margin below the true stack top for the C stack itself.

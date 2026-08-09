@@ -81,6 +81,7 @@ SRC_C += \
 	machine_i2c.c \
 	machine_spi.c \
 	machine_dac.c \
+	machine_rtc.c \
 	machine_wdt.c \
 	drivers/bus/softspi.c \
 	drivers/dht/dht.c \
