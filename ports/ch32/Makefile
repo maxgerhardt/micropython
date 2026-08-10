@@ -63,6 +63,16 @@ CFLAGS += -DCH32_TOOLCHAIN_WCH=1
 else
 ARCHFLAGS = -march=rv32imafc -mabi=ilp32f
 CFLAGS += -DCH32_TOOLCHAIN_WCH=0
+# Ubuntu ships its bare-metal RISC-V toolchain with Picolibc rather than Newlib,
+# and defaults to "nosys", so without naming a C library every translation unit
+# fails on <stdint.h>. ports/qemu carries the same block for the same reason.
+# WCH's own toolchain bundles Newlib and needs none of this.
+PICOLIBC_SPECS = $(shell $(CC) --print-file-name=picolibc.specs)
+ifneq ($(PICOLIBC_SPECS),picolibc.specs)
+$(info picolibc used $(PICOLIBC_SPECS))
+CFLAGS += --specs=$(PICOLIBC_SPECS)
+LDFLAGS += --specs=$(PICOLIBC_SPECS)
+endif
 endif
 
 INC += -I. -I$(TOP) -I$(BUILD) -I$(BOARD_DIR)
@@ -203,8 +213,12 @@ BOOT_V3F_ELF = boot_v3f/build/boot_v3f.elf
 # firmware.bin.
 SCRIPTS = ../../../scripts
 
+# The stub has its own standalone Makefile with its own CROSS default, which is
+# the PlatformIO path. Pass the toolchain down, or a build with CROSS_COMPILE
+# overridden -- which is every CI build -- compiles the firmware with one
+# compiler and then fails to find another for the stub.
 $(BOOT_V3F_ELF):
-	$(MAKE) -C boot_v3f
+	$(MAKE) -C boot_v3f CROSS=$(CROSS_COMPILE)
 
 ifeq ($(CH32_CORE),v5f)
 # The flash driver mass-erases on every program command, so the stub and the
