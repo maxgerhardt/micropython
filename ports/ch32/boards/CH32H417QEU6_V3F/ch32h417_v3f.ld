@@ -197,10 +197,22 @@ SECTIONS
 	.mem_backup (NOLOAD) :
 	{
 		. = ALIGN(8);
-		PROVIDE( _mem_backup_start = . );
-		. = . + 1032;
-		PROVIDE( _mem_backup_end = . );
+		KEEP(*(.mem_backup))
+		. = ALIGN(8);
 	} >RAM
+
+	/* The V5F board gives TinyUSB its own .bss in USB_RAM, because USBFS DMA
+	 * cannot reach that board's DTCM. This board has no such problem: its .bss
+	 * is already in the shared region on the system bus, which DMA does reach,
+	 * so TinyUSB's state stays in .bss and the startup code zeroes it along
+	 * with everything else.
+	 *
+	 * The symbols still have to exist. ch32_usbd_init() memsets _susbram.._eusbram
+	 * unconditionally, and without them this board did not link at all. An empty
+	 * range makes that memset a no-op, which is exactly right here -- the memory
+	 * it would have cleared has already been cleared. */
+	PROVIDE( _susbram = . );
+	PROVIDE( _eusbram = . );
 
 	PROVIDE( _end = _ebss);
 	PROVIDE( end = . );

@@ -230,9 +230,8 @@ SECTIONS
 	.mem_backup (NOLOAD) :
 	{
 		. = ALIGN(8);
-		PROVIDE( _mem_backup_start = . );
-		. = . + 1032;
-		PROVIDE( _mem_backup_end = . );
+		KEEP(*(.mem_backup))
+		. = ALIGN(8);
 	} >RAM
 
 	PROVIDE( _end = _ebss);

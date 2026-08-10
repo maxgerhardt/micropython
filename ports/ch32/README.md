@@ -436,11 +436,11 @@ registers it just wrote.
 ## Backup memory
 
     import machine
-    mem = machine.mem_backup()      # a writable memoryview, 1024 bytes
+    mem = machine.mem_backup()      # a writable memoryview, 128 bytes
     mem[0] = 0x42
-    print(len(mem), mem.itemsize)   # 1024 1
+    print(len(mem), mem.itemsize)   # 128 1
 
-`machine.mem_backup()` returns 1024 bytes that **survive a soft reset and
+`machine.mem_backup()` returns 128 bytes that **survive a soft reset and
 `machine.reset()`, and are lost when power goes away** — the same guarantee
 esp32, rp2 and nrf give.
 
@@ -462,8 +462,12 @@ to, which is indistinguishable from real data. A magic word in front of the user
 area turns that into a defined result: if it does not match, the region is
 zeroed, so **a cold boot reads zeros** and a warm one reads what was there.
 
-`test_mem_backup.py` stamps all 1024 bytes and checks them back after both a
-soft and a hard reset.
+The size lives in `machine_mem_backup.c` and nowhere else: the linker script
+places the section but does not reserve a length, so the two cannot drift apart
+and let a write run past the reservation into the heap.
+
+`test_mem_backup.py` stamps every byte and checks them back after both a soft
+and a hard reset.
 
 ## Frozen modules
 

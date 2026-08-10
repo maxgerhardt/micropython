@@ -22,17 +22,13 @@
  * region is zeroed and the word written, so a cold boot reads zeros and a warm
  * one reads what was there.
  */
-#include <stddef.h>
 #include <string.h>
 
 #include "machine_mem_backup.h"
 
-extern uint8_t _mem_backup_start[];
-
 /* Arbitrary, just unlikely to be what uninitialised SRAM settles to. */
-#define CH32_MEM_BACKUP_MAGIC  (0x6B426843)
-#define CH32_MEM_BACKUP_BYTES  (1024)
-#define CH32_MEM_BACKUP_HEADER (8)
+#define CH32_MEM_BACKUP_MAGIC (0x6B426843)
+#define CH32_MEM_BACKUP_BYTES (128)
 
 typedef struct _ch32_mem_backup_t {
     uint32_t magic;
@@ -40,18 +36,21 @@ typedef struct _ch32_mem_backup_t {
     uint8_t data[CH32_MEM_BACKUP_BYTES];
 } ch32_mem_backup_t;
 
-MP_STATIC_ASSERT(offsetof(ch32_mem_backup_t, data) == CH32_MEM_BACKUP_HEADER);
+/* The size lives here and nowhere else. The linker script only *places* this
+ * section -- it does not reserve a length -- so the two cannot drift apart and
+ * silently let these writes run past the reservation into the heap. */
+__attribute__((section(".mem_backup"), aligned(8)))
+static ch32_mem_backup_t ch32_mem_backup;
 
 void ch32_mem_backup_init(void) {
-    ch32_mem_backup_t *mem = (ch32_mem_backup_t *)_mem_backup_start;
-    if (mem->magic != CH32_MEM_BACKUP_MAGIC) {
-        memset(mem->data, 0, sizeof(mem->data));
-        mem->magic = CH32_MEM_BACKUP_MAGIC;
+    if (ch32_mem_backup.magic != CH32_MEM_BACKUP_MAGIC) {
+        memset(ch32_mem_backup.data, 0, sizeof(ch32_mem_backup.data));
+        ch32_mem_backup.magic = CH32_MEM_BACKUP_MAGIC;
     }
 }
 
 /* Byte granularity: it is plain SRAM, so there is no word-write restriction to
  * force 'I' on callers the way a register-backed region would. */
 static const mp_obj_array_t machine_mem_backup_regions[] = {
-    BACKUP_MV('B', CH32_MEM_BACKUP_BYTES, (void *)(_mem_backup_start + CH32_MEM_BACKUP_HEADER)),
+    BACKUP_MV('B', CH32_MEM_BACKUP_BYTES, (void *)ch32_mem_backup.data),
 };

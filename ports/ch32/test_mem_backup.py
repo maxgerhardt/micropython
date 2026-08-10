@@ -5,7 +5,7 @@ shape checks are the easy half and the two reset checks are the point. A region
 that reports the right length and accepts writes but quietly starts over on
 every boot would pass everything except those.
 
-The region is plain SRAM in its own NOLOAD section -- this part has no
+The region is 128 bytes of plain SRAM in its own NOLOAD section -- this part has no
 battery-backed user storage, see machine_mem_backup.c -- so it survives a soft
 reset and machine.reset() but not power-off. That last case is checked the only
 way it can be from here: after a cold boot the magic word in front of the user
