@@ -555,21 +555,37 @@ function ci_stm32_path {
 ########################################################################################
 # ports/ch32
 
+# WCH's GCC, the only compiler that understands this chip's custom "xw"
+# extension. Taken from the PlatformIO registry rather than from a git
+# repository: the toolchain-riscv-linux repo is GCC 10.2.0, which predates the
+# bitmanip extensions and rejects -march=...zba... outright, whereas this package
+# is the Linux build of the same 13.x toolchain a development machine uses.
+CH32_TOOLCHAIN_URL=https://dl.registry.platformio.org/download/platformio/tool/toolchain-riscv/1.130200.2/toolchain-riscv-linux_x86_64-1.130200.2.tar.gz
+
 function ci_ch32_setup {
-    # WCH's GCC, the only compiler that understands this chip's custom "xw"
-    # extension and its fast interrupt entry. That repository publishes no
-    # releases, so clone it shallowly rather than fetching a release tarball.
-    git clone --depth 1 https://github.com/maxgerhardt/toolchain-riscv-linux.git "${HOME}/toolchain-riscv"
-    chmod +x "${HOME}/toolchain-riscv/bin/"*
-    "${HOME}/toolchain-riscv/bin/riscv64-unknown-elf-gcc" --version
+    mkdir -p "${HOME}/toolchain-riscv"
+    wget -q "${CH32_TOOLCHAIN_URL}" -O /tmp/toolchain-riscv.tar.gz
+    tar xzf /tmp/toolchain-riscv.tar.gz -C "${HOME}/toolchain-riscv"
+    ls "${HOME}/toolchain-riscv/bin/" | head -20
+    "$(ci_ch32_bin)/$(ci_ch32_cross)gcc" --version
+}
+
+# The package's tool prefix is discovered rather than assumed, so that a future
+# toolchain bump cannot silently break the build by renaming the binaries.
+function ci_ch32_bin {
+    dirname "$(ls "${HOME}"/toolchain-riscv/bin/*-gcc "${HOME}"/toolchain-riscv/*/bin/*-gcc 2>/dev/null | head -1)"
+}
+
+function ci_ch32_cross {
+    basename "$(ls "${HOME}"/toolchain-riscv/bin/*-gcc "${HOME}"/toolchain-riscv/*/bin/*-gcc 2>/dev/null | head -1)" gcc
 }
 
 function ci_ch32_path {
-    echo "${HOME}/toolchain-riscv/bin"
+    ci_ch32_bin
 }
 
 function ci_ch32_size_report {
-    local size=${1:-riscv64-unknown-elf-size}
+    local size=$1
     for elf in ports/ch32/build-*/firmware.elf ports/ch32/boot_v3f/build/boot_v3f.elf; do
         [ -f "${elf}" ] || continue
         echo "### ${elf}" >> "${GITHUB_STEP_SUMMARY:-/dev/stdout}"
@@ -580,26 +596,28 @@ function ci_ch32_size_report {
 }
 
 function ci_ch32_wch_build {
+    local cross=$(ci_ch32_cross)
     make ${MAKEOPTS} -C mpy-cross
     make ${MAKEOPTS} -C ports/ch32 submodules
     # firmware.bin is the deliverable: this chip's OpenOCD driver mass-erases on
     # every program command, so the V3F stub and the V5F image have to be
     # written as one object.
-    make ${MAKEOPTS} -C ports/ch32 BOARD=CH32H417QEU6_V5F CROSS_COMPILE=riscv64-unknown-elf- firmware.bin
-    make ${MAKEOPTS} -C ports/ch32 BOARD=CH32H417QEU6_V3F CROSS_COMPILE=riscv64-unknown-elf-
-    ci_ch32_size_report
+    make ${MAKEOPTS} -C ports/ch32 BOARD=CH32H417QEU6_V5F CROSS_COMPILE=${cross} firmware.bin
+    make ${MAKEOPTS} -C ports/ch32 BOARD=CH32H417QEU6_V3F CROSS_COMPILE=${cross}
+    ci_ch32_size_report ${cross}size
 }
 
 function ci_ch32_generic_build {
-    # A stock RISC-V GCC: no "xw", no WCH interrupt attribute. Build-only, and
-    # deliberately so -- the vendored startup code and core_riscv.c are written
-    # for WCH's compiler, so this guards the port's own sources against quietly
-    # depending on WCH extensions and claims nothing about the image it makes.
+    # A stock RISC-V GCC: no "xw", no WCH interrupt attribute, no bitmanip.
+    # Build-only, and deliberately so -- the vendored startup code and
+    # core_riscv.c are written for WCH's compiler, so this guards the port's own
+    # sources against quietly depending on WCH extensions and claims nothing
+    # about the image it produces.
     make ${MAKEOPTS} -C mpy-cross
     make ${MAKEOPTS} -C ports/ch32 submodules
     make ${MAKEOPTS} -C ports/ch32 BOARD=CH32H417QEU6_V5F CH32_TOOLCHAIN=generic CROSS_COMPILE=riscv64-unknown-elf-
     make ${MAKEOPTS} -C ports/ch32 BOARD=CH32H417QEU6_V3F CH32_TOOLCHAIN=generic CROSS_COMPILE=riscv64-unknown-elf-
-    ci_ch32_size_report
+    ci_ch32_size_report riscv64-unknown-elf-size
 }
 
 function ci_stm32_pyb_build {
