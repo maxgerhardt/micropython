@@ -30,6 +30,11 @@ MICROPY_VFS_FAT = 1
 include $(TOP)/py/py.mk
 include $(TOP)/extmod/extmod.mk
 
+# The vendored WCH SDK, exactly as ports/stm32 declares lib/stm32lib. It holds
+# EVT/EXAM/SRC from openwch/ch32h417 and nothing else -- see sdk.mk for the
+# three files it does NOT ship, which this port owns instead.
+GIT_SUBMODULES += lib/ch32h417lib
+
 # Toolchain: WCH's GCC, the only one that understands the custom "xw" extension.
 #
 # $(HOME) is a Windows-style path under Git Bash (C:\Users\...), and the
@@ -158,7 +163,14 @@ $(BUILD)/sdk/%.o: %.S
 	$(ECHO) "AS $<"
 	$(Q)$(CC) $(CFLAGS) -c -o $@ $<
 
-all: $(BUILD)/firmware.elf
+# A clone without --recursive has no SDK at all, and the failure is otherwise a
+# wall of missing headers that says nothing about the cause. ports/stm32 does
+# the same for lib/stm32lib.
+all: $(TOP)/lib/ch32h417lib/README.md $(BUILD)/firmware.elf
+
+$(TOP)/lib/ch32h417lib/README.md:
+	$(ECHO) "ch32h417lib submodule not found, fetching it now..."
+	(cd $(TOP) && git submodule update --init lib/ch32h417lib)
 
 $(BUILD)/firmware.elf: $(OBJ) $(LD_FILE)
 	$(ECHO) "LINK $@"

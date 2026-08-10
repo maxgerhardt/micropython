@@ -104,3 +104,6 @@
 [submodule "lib/psoc-edge/async-transfer"]
 	path = lib/psoc-edge/async-transfer
 	url = https://github.com/Infineon/async-transfer.git
+[submodule "lib/ch32h417lib"]
+	path = lib/ch32h417lib
+	url = https://github.com/maxgerhardt/ch32h417lib
