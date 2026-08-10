@@ -43,7 +43,9 @@ GIT_SUBMODULES += lib/ch32h417lib
 HOME_FWD := $(subst \,/,$(HOME))
 PIO_PKGS ?= $(HOME_FWD)/.platformio/packages
 CROSS_COMPILE ?= $(PIO_PKGS)/toolchain-riscv/bin/riscv-wch-elf-
-SDK ?= $(PIO_PKGS)/framework-wch-noneos-sdk
+# SDK is deliberately not set here: sdk.mk points it at the lib/ch32h417lib
+# submodule. Only the toolchain still comes from the PlatformIO package store,
+# because that is where it lives on a development machine; CI overrides it.
 
 include sdk.mk
 
@@ -87,6 +89,7 @@ SRC_C += \
 	machine_spi.c \
 	machine_dac.c \
 	machine_rtc.c \
+	system_ch32h417_$(CH32_CORE).c \
 	machine_wdt.c \
 	drivers/bus/softspi.c \
 	drivers/dht/dht.c \

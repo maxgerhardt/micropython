@@ -23,7 +23,7 @@ CFLAGS := $(ARCHFLAGS) -Os -g -std=gnu11 -fsingle-precision-constant \
 	-msmall-data-limit=8 -mno-save-restore \
 	-ffunction-sections -fdata-sections -Wall -Wno-comment \
 	-DCH32H417QE -DCH32H41X -DCH32H41x -DCH32H417 -DCore_V5F \
-	-DSYSCLK_400M_CoreCLK_V5F_400M_V3F_100M_HSE \
+	-DSYSCLK_400M_CoreCLK_V5F_400M_V3F_100M_HSE=400000000 \
 	$(INC)
 
 LDFLAGS := $(ARCHFLAGS) -nostartfiles -Wl,--gc-sections \

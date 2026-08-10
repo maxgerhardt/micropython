@@ -66,6 +66,11 @@ EXCLUSIONS = [
     "ports/stm32/usbhost/**/*.[ch]",
     # STM32 build includes generated Python code.
     "ports/*/build*",
+    # CH32 keeps vendor files upstream ships per-example rather than in its SDK
+    # repo. They are carried verbatim so they stay diffable against a new vendor
+    # drop; reformatting them would destroy that.
+    "ports/ch32/ch32h417_conf.h",
+    "ports/ch32/system_ch32h417*.[ch]",
 ]
 
 # Path to repo top-level dir.

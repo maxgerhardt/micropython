@@ -1,39 +1,48 @@
-# WCH NoneOS SDK sources and includes for the CH32H417 V3F.
+# WCH SDK sources and includes for the CH32H417.
+#
+# lib/ch32h417lib is EVT/EXAM/SRC from openwch/ch32h417, vendored as a submodule
+# the way ports/stm32 vendors lib/stm32lib. Overridable so a local checkout can
+# be substituted while chasing a vendor bug.
 #
 # Sources are listed explicitly rather than globbed so that pulling in a new
-# peripheral for a later milestone (USB, Ethernet, flash filesystem) is a
-# visible, reviewable change.
-SDK ?= $(subst \,/,$(HOME))/.platformio/packages/framework-wch-noneos-sdk
+# peripheral for a later milestone (Ethernet, CAN) is a visible, reviewable
+# change.
+SDK ?= $(TOP)/lib/ch32h417lib
 
+# Three files are NOT here, and their absence is not an oversight: upstream ships
+# ch32h417_conf.h, system_ch32h417.c and system_ch32h417.h per-example under
+# <example>/<core>/User/, not in EVT/EXAM/SRC. They are configuration rather than
+# library code -- the system file carries the hardcoded clock selection -- so
+# this port owns its own copies next to this file. PlatformIO's repackaging
+# invents a System/ directory by hoisting one example's copy; the submodule
+# deliberately mirrors what the vendor actually publishes.
+#
 # Debug/ is on the include path because ch32h417_conf.h pulls in debug.h, but
-# debug.c is NOT compiled (see below).
+# debug.c is NOT compiled: it defines a _write retarget that collides with
+# MicroPython's stdio.
 SDK_INC := \
-	$(SDK)/Core/ch32h417 \
-	$(SDK)/Peripheral/ch32h417/inc \
-	$(SDK)/System/ch32h417/$(CH32_CORE) \
-	$(SDK)/Debug/ch32h417
+	$(SDK)/Core \
+	$(SDK)/Peripheral/inc \
+	$(SDK)/Debug
 
 INC += $(addprefix -I,$(SDK_INC))
 
-# Note: Debug/ch32h417/debug.c is deliberately absent. It defines a _write
-# retarget that collides with MicroPython's stdio.
 SDK_SRC_C := \
-	$(SDK)/Core/ch32h417/core_riscv.c \
-	$(SDK)/System/ch32h417/$(CH32_CORE)/system_ch32h417.c \
-	$(SDK)/Peripheral/ch32h417/src/ch32h417_rcc.c \
-	$(SDK)/Peripheral/ch32h417/src/ch32h417_gpio.c \
-	$(SDK)/Peripheral/ch32h417/src/ch32h417_i2c.c \
-	$(SDK)/Peripheral/ch32h417/src/ch32h417_spi.c \
-	$(SDK)/Peripheral/ch32h417/src/ch32h417_adc.c \
-	$(SDK)/Peripheral/ch32h417/src/ch32h417_dma.c \
-	$(SDK)/Peripheral/ch32h417/src/ch32h417_tim.c \
-	$(SDK)/Peripheral/ch32h417/src/ch32h417_dac.c \
-	$(SDK)/Peripheral/ch32h417/src/ch32h417_iwdg.c \
-	$(SDK)/Peripheral/ch32h417/src/ch32h417_rtc.c \
-	$(SDK)/Peripheral/ch32h417/src/ch32h417_usart.c \
-	$(SDK)/Peripheral/ch32h417/src/ch32h417_flash.c \
-	$(SDK)/Peripheral/ch32h417/src/ch32h417_pwr.c \
-	$(SDK)/Peripheral/ch32h417/src/ch32h417_misc.c
+	$(SDK)/Core/core_riscv.c \
+	$(SDK)/Peripheral/src/ch32h417_rcc.c \
+	$(SDK)/Peripheral/src/ch32h417_gpio.c \
+	$(SDK)/Peripheral/src/ch32h417_i2c.c \
+	$(SDK)/Peripheral/src/ch32h417_spi.c \
+	$(SDK)/Peripheral/src/ch32h417_adc.c \
+	$(SDK)/Peripheral/src/ch32h417_dma.c \
+	$(SDK)/Peripheral/src/ch32h417_tim.c \
+	$(SDK)/Peripheral/src/ch32h417_dac.c \
+	$(SDK)/Peripheral/src/ch32h417_iwdg.c \
+	$(SDK)/Peripheral/src/ch32h417_rtc.c \
+	$(SDK)/Peripheral/src/ch32h417_usart.c \
+	$(SDK)/Peripheral/src/ch32h417_flash.c \
+	$(SDK)/Peripheral/src/ch32h417_pwr.c \
+	$(SDK)/Peripheral/src/ch32h417_misc.c
 
 # Drop any that do not exist in this SDK revision.
 SDK_SRC_C := $(wildcard $(SDK_SRC_C))
