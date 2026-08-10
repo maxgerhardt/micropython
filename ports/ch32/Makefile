@@ -33,7 +33,9 @@ include $(TOP)/extmod/extmod.mk
 # The vendored WCH SDK, exactly as ports/stm32 declares lib/stm32lib. It holds
 # EVT/EXAM/SRC from openwch/ch32h417 and nothing else -- see sdk.mk for the
 # three files it does NOT ship, which this port owns instead.
-GIT_SUBMODULES += lib/ch32h417lib
+# lib/tinyusb belongs here too: it was only ever present because a developer had
+# initialised it by hand, so a fresh checkout built until it reached tusb.h.
+GIT_SUBMODULES += lib/ch32h417lib lib/tinyusb
 
 # Toolchain: WCH's GCC, the only one that understands the custom "xw" extension.
 #
