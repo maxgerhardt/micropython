@@ -552,6 +552,56 @@ function ci_stm32_path {
     echo $(pwd)/arm-gnu-toolchain-14.3.rel1-x86_64-arm-none-eabi/bin
 }
 
+########################################################################################
+# ports/ch32
+
+function ci_ch32_setup {
+    # WCH's GCC, the only compiler that understands this chip's custom "xw"
+    # extension and its fast interrupt entry. That repository publishes no
+    # releases, so clone it shallowly rather than fetching a release tarball.
+    git clone --depth 1 https://github.com/maxgerhardt/toolchain-riscv-linux.git "${HOME}/toolchain-riscv"
+    chmod +x "${HOME}/toolchain-riscv/bin/"*
+    "${HOME}/toolchain-riscv/bin/riscv64-unknown-elf-gcc" --version
+}
+
+function ci_ch32_path {
+    echo "${HOME}/toolchain-riscv/bin"
+}
+
+function ci_ch32_size_report {
+    local size=${1:-riscv64-unknown-elf-size}
+    for elf in ports/ch32/build-*/firmware.elf ports/ch32/boot_v3f/build/boot_v3f.elf; do
+        [ -f "${elf}" ] || continue
+        echo "### ${elf}" >> "${GITHUB_STEP_SUMMARY:-/dev/stdout}"
+        echo '```' >> "${GITHUB_STEP_SUMMARY:-/dev/stdout}"
+        ${size} "${elf}" >> "${GITHUB_STEP_SUMMARY:-/dev/stdout}"
+        echo '```' >> "${GITHUB_STEP_SUMMARY:-/dev/stdout}"
+    done
+}
+
+function ci_ch32_wch_build {
+    make ${MAKEOPTS} -C mpy-cross
+    make ${MAKEOPTS} -C ports/ch32 submodules
+    # firmware.bin is the deliverable: this chip's OpenOCD driver mass-erases on
+    # every program command, so the V3F stub and the V5F image have to be
+    # written as one object.
+    make ${MAKEOPTS} -C ports/ch32 BOARD=CH32H417QEU6_V5F CROSS_COMPILE=riscv64-unknown-elf- firmware.bin
+    make ${MAKEOPTS} -C ports/ch32 BOARD=CH32H417QEU6_V3F CROSS_COMPILE=riscv64-unknown-elf-
+    ci_ch32_size_report
+}
+
+function ci_ch32_generic_build {
+    # A stock RISC-V GCC: no "xw", no WCH interrupt attribute. Build-only, and
+    # deliberately so -- the vendored startup code and core_riscv.c are written
+    # for WCH's compiler, so this guards the port's own sources against quietly
+    # depending on WCH extensions and claims nothing about the image it makes.
+    make ${MAKEOPTS} -C mpy-cross
+    make ${MAKEOPTS} -C ports/ch32 submodules
+    make ${MAKEOPTS} -C ports/ch32 BOARD=CH32H417QEU6_V5F CH32_TOOLCHAIN=generic CROSS_COMPILE=riscv64-unknown-elf-
+    make ${MAKEOPTS} -C ports/ch32 BOARD=CH32H417QEU6_V3F CH32_TOOLCHAIN=generic CROSS_COMPILE=riscv64-unknown-elf-
+    ci_ch32_size_report
+}
+
 function ci_stm32_pyb_build {
     # This function builds the following MCU families: F4, F7.
 

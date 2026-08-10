@@ -1,0 +1,49 @@
+name: ch32 port
+
+on:
+  push:
+  pull_request:
+    paths:
+      - '.github/workflows/*.yml'
+      - 'tools/**'
+      - 'py/**'
+      - 'extmod/**'
+      - 'shared/**'
+      - 'lib/**'
+      - 'drivers/**'
+      - 'ports/ch32/**'
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  # WCH's own GCC, which is the only one that understands this chip's custom
+  # "xw" extension. This is the build that produces a flashable image.
+  build_wch:
+    runs-on: ubuntu-22.04
+    steps:
+    - uses: actions/checkout@v7
+    - name: Install toolchain
+      run: tools/ci.sh ch32_setup && tools/ci.sh ch32_path >> $GITHUB_PATH
+    - name: Build
+      run: tools/ci.sh ch32_wch_build
+    - name: Upload firmware.bin
+      uses: actions/upload-artifact@v4
+      with:
+        name: ch32h417-firmware
+        path: ports/ch32/build-CH32H417QEU6_V5F/firmware.bin
+        if-no-files-found: error
+
+  # A stock RISC-V GCC, to keep the port's own sources from depending on WCH
+  # extensions. Build-only: the vendored startup code and core_riscv.c are
+  # written for WCH's compiler, so nothing is claimed about this image beyond
+  # the fact that it compiles and links.
+  build_generic:
+    runs-on: ubuntu-22.04
+    steps:
+    - uses: actions/checkout@v7
+    - name: Install toolchain
+      run: tools/ci.sh gcc_riscv_setup
+    - name: Build
+      run: tools/ci.sh ch32_generic_build
