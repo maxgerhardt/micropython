@@ -63,7 +63,12 @@ ifeq ($(CH32_TOOLCHAIN),wch)
 ARCHFLAGS = -march=rv32imafc_zba_zbb_zbc_zbs_xw -mabi=ilp32f
 CFLAGS += -DCH32_TOOLCHAIN_WCH=1
 else
-ARCHFLAGS = -march=rv32imafc -mabi=ilp32f
+# zifencei has to be named explicitly. Modern GCC split fence.i out of the base
+# "i" extension, and the vendor's core_riscv.h emits it inline, so without this
+# a stock toolchain fails with "unrecognized opcode `fence.i', extension
+# `zifencei' required". WCH's own GCC still folds it into the base set, which is
+# why only this side needs it.
+ARCHFLAGS = -march=rv32imafc_zifencei -mabi=ilp32f
 CFLAGS += -DCH32_TOOLCHAIN_WCH=0
 # Ubuntu ships its bare-metal RISC-V toolchain with Picolibc rather than Newlib,
 # and defaults to "nosys", so without naming a C library every translation unit
