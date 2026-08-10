@@ -5,15 +5,67 @@ V5F core (`wch_riscv.cpu.1`) at 400 MHz. The V3F is a boot stub that starts it.
 
 ## Building
 
-Requires a PlatformIO package store for the toolchain and vendor SDK:
+The WCH SDK is a submodule, so a git checkout is all you need:
 
+    git submodule update --init lib/ch32h417lib lib/tinyusb
     make -C ../../mpy-cross
     make BOARD=CH32H417QEU6_V5F -j8
     make BOARD=CH32H417QEU6_V5F deploy
 
-Override `PIO_PKGS`, `CROSS_COMPILE` or `SDK` if your packages live elsewhere.
-Under Git Bash, pass `PYTHON=/c/path/to/python.exe` — a bare `python` hits the
-Windows Store stub.
+`make` fetches `lib/ch32h417lib` for you if it is missing. `CROSS_COMPILE`
+still defaults to a PlatformIO package store, because that is where the WCH
+toolchain lives on a development machine; override it to build elsewhere. Under
+Git Bash, pass `PYTHON=/c/path/to/python.exe` — a bare `python` hits the Windows
+Store stub.
+
+`make deploy` writes `firmware.bin`, the V3F stub and the V5F image merged into
+one object. They cannot be flashed separately: this chip's OpenOCD driver
+mass-erases on every program command, so the second write would destroy the
+first while still reporting "Verified OK".
+
+### Where the vendor code comes from
+
+`lib/ch32h417lib` is `EVT/EXAM/SRC` from openwch/ch32h417, vendored the way
+`ports/stm32` vendors `lib/stm32lib`. Three files are **port-owned instead**,
+because upstream ships them per-example under `<example>/<core>/User/` rather
+than in `EVT/EXAM/SRC` — they are configuration, not library code:
+
+| File | Why |
+|---|---|
+| `ch32h417_conf.h` | selects which peripheral headers compile in |
+| `system_ch32h417_v3f.c` | `SystemInit()` plus the hardcoded clock selection, keyed off the `SYSCLK_*` macro in `mpconfigboard.mk` |
+| `system_ch32h417_v5f.c` | only `SystemAndCoreClockUpdate()`; the V5F never configures the clock tree, because the V3F stub already did |
+
+They are carried verbatim so they stay diffable against a future vendor drop,
+and `tools/codeformat.py` excludes them for the same reason. This mirrors
+`ports/stm32`, which owns `system_stm32.c` while taking HAL and CMSIS from its
+submodule.
+
+### Toolchains
+
+    make BOARD=CH32H417QEU6_V5F                        # CH32_TOOLCHAIN=wch, the default
+    make BOARD=CH32H417QEU6_V5F CH32_TOOLCHAIN=generic # stock RISC-V GCC
+
+| | `wch` | `generic` |
+|---|---|---|
+| `-march=` | `rv32imafc_zba_zbb_zbc_zbs_xw` | `rv32imafc_zifencei` |
+| ISR attribute | `interrupt("WCH-Interrupt-fast")` | `interrupt` |
+| Runs on hardware | yes | untested |
+
+Only WCH's GCC implements the `xw` extension and its fast interrupt entry, so
+that is what the released firmware is built with. The generic mode exists to
+stop the port's own sources from quietly depending on WCH extensions, and it
+does compile the vendor's `core_riscv.c` and startup assembly — `zifencei` has
+to be named explicitly because modern GCC split `fence.i` out of the base
+instruction set and the vendor's header emits it inline.
+
+Measured, the two differ by about 80 bytes of text, so `xw` and the bitmanip
+extensions are buying very little here.
+
+CI (`.github/workflows/ports_ch32.yml`) builds both boards both ways on every
+push and uploads `firmware.bin` from the WCH build. That artifact has been
+flashed and passes the full suite, so it is a real image and not just something
+that linked.
 
 ## Cores
 
