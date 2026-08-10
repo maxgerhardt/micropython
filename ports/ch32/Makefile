@@ -49,7 +49,21 @@ CROSS_COMPILE ?= $(PIO_PKGS)/toolchain-riscv/bin/riscv-wch-elf-
 
 include sdk.mk
 
+# Toolchain flavour. WCH's GCC is the only one that understands the custom "xw"
+# extension and its fast interrupt entry. "generic" builds with a stock
+# riscv64-unknown-elf-gcc instead, which is what CI uses to stop the port's own
+# code from quietly depending on WCH extensions. The generic image is not run on
+# hardware -- the vendored startup code and core_riscv.c were written for WCH's
+# compiler -- so it is a compile-time guard and nothing more.
+CH32_TOOLCHAIN ?= wch
+
+ifeq ($(CH32_TOOLCHAIN),wch)
 ARCHFLAGS = -march=rv32imafc_zba_zbb_zbc_zbs_xw -mabi=ilp32f
+CFLAGS += -DCH32_TOOLCHAIN_WCH=1
+else
+ARCHFLAGS = -march=rv32imafc -mabi=ilp32f
+CFLAGS += -DCH32_TOOLCHAIN_WCH=0
+endif
 
 INC += -I. -I$(TOP) -I$(BUILD) -I$(BOARD_DIR)
 

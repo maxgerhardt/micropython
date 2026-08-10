@@ -10,6 +10,7 @@
  * consoles share one input queue. */
 #include "py/ringbuf.h"
 #include "mphalport.h"
+#include "irq.h"
 
 void uart_init(uint32_t baud) {
     GPIO_InitTypeDef gpio = {0};
@@ -65,7 +66,7 @@ int uart_rx_chr(void) {
     return ringbuf_get(&stdin_ringbuf);
 }
 
-void USART1_IRQHandler(void) __attribute__((interrupt("WCH-Interrupt-fast")));
+void CH32_IRQ_HANDLER(USART1_IRQHandler);
 void USART1_IRQHandler(void) {
     if (USART_GetFlagStatus(USART1, USART_FLAG_RXNE) != RESET) {
         uint8_t c = (uint8_t)(USART_ReceiveData(USART1) & 0xff);

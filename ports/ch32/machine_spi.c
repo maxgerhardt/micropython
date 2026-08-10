@@ -31,6 +31,7 @@
 #include "extmod/modmachine.h"
 
 #include "machine_pin.h"
+#include "irq.h"
 
 #define SPI_DEFAULT_BAUDRATE  (1000000)
 #define SPI_DEFAULT_POLARITY  (0)
@@ -314,13 +315,13 @@ static const uint8_t machine_spi_idle_byte = 0;
 /* These exist only to end the WFI in machine_spi_dma_wait() promptly. Each
  * clears its own transfer-complete enable, so it fires once per transfer rather
  * than spinning on a flag nobody has cleared yet. */
-void DMA1_Channel2_IRQHandler(void) __attribute__((interrupt("WCH-Interrupt-fast")));
+void CH32_IRQ_HANDLER(DMA1_Channel2_IRQHandler);
 void DMA1_Channel2_IRQHandler(void) {
     SPI_DMA_RX->CFGR &= ~DMA_IT_TC;
     DMA1->INTFCR = SPI_DMA_RX_FLAGS;
 }
 
-void DMA1_Channel3_IRQHandler(void) __attribute__((interrupt("WCH-Interrupt-fast")));
+void CH32_IRQ_HANDLER(DMA1_Channel3_IRQHandler);
 void DMA1_Channel3_IRQHandler(void) {
     SPI_DMA_TX->CFGR &= ~DMA_IT_TC;
     DMA1->INTFCR = SPI_DMA_TX_FLAGS;

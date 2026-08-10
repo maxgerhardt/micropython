@@ -10,6 +10,7 @@
 static uint8_t stdin_ringbuf_array[MICROPY_HW_STDIN_BUFFER_LEN];
 ringbuf_t stdin_ringbuf = { stdin_ringbuf_array, sizeof(stdin_ringbuf_array) };
 
+#include "irq.h"
 #include "machine_rtc.h"
 #include "uart.h"
 #include "mphalport.h"
@@ -36,7 +37,7 @@ ringbuf_t stdin_ringbuf = { stdin_ringbuf_array, sizeof(stdin_ringbuf_array) };
 static volatile uint64_t systick_ms;
 static uint32_t systick_per_us;  // SysTick counts per microsecond
 
-void SysTick0_Handler(void) __attribute__((interrupt("WCH-Interrupt-fast")));
+void CH32_IRQ_HANDLER(SysTick0_Handler);
 void SysTick0_Handler(void) {
     SysTick0->ISR &= ~(1u << 0);
     systick_ms++;

@@ -16,6 +16,7 @@
 #include "shared/tinyusb/mp_usbd.h"
 
 #include "usbd.h"
+#include "irq.h"
 
 #ifndef CH32_USBD_CLOCK_DEBUG
 #define CH32_USBD_CLOCK_DEBUG (0)
@@ -135,7 +136,7 @@ void ch32_usbd_task(void) {
     tud_task();
 }
 
-void USBFS_IRQHandler(void) __attribute__((interrupt("WCH-Interrupt-fast")));
+void CH32_IRQ_HANDLER(USBFS_IRQHandler);
 void USBFS_IRQHandler(void) {
     ch32_usbd_irq_count++;
     tud_int_handler(0);

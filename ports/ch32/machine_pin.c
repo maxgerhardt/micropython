@@ -23,6 +23,7 @@
 #include "extmod/virtpin.h"
 
 #include "machine_pin.h"
+#include "irq.h"
 
 #define PIN_MODE_IN              (0)
 #define PIN_MODE_OUT             (1)
@@ -504,12 +505,12 @@ static void pin_exti_service(uint32_t first, uint32_t last) {
     }
 }
 
-void EXTI7_0_IRQHandler(void) __attribute__((interrupt("WCH-Interrupt-fast")));
+void CH32_IRQ_HANDLER(EXTI7_0_IRQHandler);
 void EXTI7_0_IRQHandler(void) {
     pin_exti_service(0, 7);
 }
 
-void EXTI15_8_IRQHandler(void) __attribute__((interrupt("WCH-Interrupt-fast")));
+void CH32_IRQ_HANDLER(EXTI15_8_IRQHandler);
 void EXTI15_8_IRQHandler(void) {
     pin_exti_service(8, 15);
 }
