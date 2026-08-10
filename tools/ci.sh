@@ -555,33 +555,42 @@ function ci_stm32_path {
 ########################################################################################
 # ports/ch32
 
-# WCH's GCC, the only compiler that understands this chip's custom "xw"
-# extension. Taken from the PlatformIO registry rather than from a git
-# repository: the toolchain-riscv-linux repo is GCC 10.2.0, which predates the
-# bitmanip extensions and rejects -march=...zba... outright, whereas this package
-# is the Linux build of the same 13.x toolchain a development machine uses.
-CH32_TOOLCHAIN_URL=https://dl.registry.platformio.org/download/platformio/tool/toolchain-riscv/1.130200.2/toolchain-riscv-linux_x86_64-1.130200.2.tar.gz
+# Two toolchains, because they answer different questions.
+#
+# WCH's GCC is the only one that implements this chip's custom "xw" extension
+# and the fast interrupt entry that goes with it, so it is what the flashable
+# artifact is built with. The gcc12 branch is the current one; the repository's
+# main branch is GCC 10.2.0, which predates the bitmanip extensions and rejects
+# -march=rv32imafc_zba_zbb_zbc_zbs_xw outright.
+CH32_WCH_TOOLCHAIN_REPO=https://github.com/Community-PIO-CH32V/toolchain-riscv-linux.git
+CH32_WCH_TOOLCHAIN_BRANCH=gcc12
+
+# xpack's riscv-none-elf is a stock upstream GCC with no vendor patches, which
+# is precisely why it is useful: it proves the port compiles without WCH
+# extensions. Pinned rather than tracking "latest" so a CI failure is always
+# attributable to a change here.
+CH32_XPACK_VERSION=15.2.0-1
+CH32_XPACK_URL=https://github.com/xpack-dev-tools/riscv-none-elf-gcc-xpack/releases/download/v${CH32_XPACK_VERSION}/xpack-riscv-none-elf-gcc-${CH32_XPACK_VERSION}-linux-x64.tar.gz
 
 function ci_ch32_setup {
-    mkdir -p "${HOME}/toolchain-riscv"
-    wget -q "${CH32_TOOLCHAIN_URL}" -O /tmp/toolchain-riscv.tar.gz
-    tar xzf /tmp/toolchain-riscv.tar.gz -C "${HOME}/toolchain-riscv"
-    ls "${HOME}/toolchain-riscv/bin/" | head -20
-    "$(ci_ch32_bin)/$(ci_ch32_cross)gcc" --version
-}
-
-# The package's tool prefix is discovered rather than assumed, so that a future
-# toolchain bump cannot silently break the build by renaming the binaries.
-function ci_ch32_bin {
-    dirname "$(ls "${HOME}"/toolchain-riscv/bin/*-gcc "${HOME}"/toolchain-riscv/*/bin/*-gcc 2>/dev/null | head -1)"
-}
-
-function ci_ch32_cross {
-    basename "$(ls "${HOME}"/toolchain-riscv/bin/*-gcc "${HOME}"/toolchain-riscv/*/bin/*-gcc 2>/dev/null | head -1)" gcc
+    git clone --depth 1 --branch ${CH32_WCH_TOOLCHAIN_BRANCH} ${CH32_WCH_TOOLCHAIN_REPO} "${HOME}/toolchain-wch"
+    chmod +x "${HOME}/toolchain-wch/bin/"*
+    "${HOME}/toolchain-wch/bin/riscv-wch-elf-gcc" --version
 }
 
 function ci_ch32_path {
-    ci_ch32_bin
+    echo "${HOME}/toolchain-wch/bin"
+}
+
+function ci_ch32_generic_setup {
+    wget -q ${CH32_XPACK_URL} -O /tmp/xpack-riscv.tar.gz
+    mkdir -p "${HOME}/toolchain-xpack"
+    tar xzf /tmp/xpack-riscv.tar.gz -C "${HOME}/toolchain-xpack" --strip-components=1
+    "${HOME}/toolchain-xpack/bin/riscv-none-elf-gcc" --version
+}
+
+function ci_ch32_generic_path {
+    echo "${HOME}/toolchain-xpack/bin"
 }
 
 function ci_ch32_size_report {
@@ -596,28 +605,26 @@ function ci_ch32_size_report {
 }
 
 function ci_ch32_wch_build {
-    local cross=$(ci_ch32_cross)
     make ${MAKEOPTS} -C mpy-cross
     make ${MAKEOPTS} -C ports/ch32 submodules
     # firmware.bin is the deliverable: this chip's OpenOCD driver mass-erases on
     # every program command, so the V3F stub and the V5F image have to be
     # written as one object.
-    make ${MAKEOPTS} -C ports/ch32 BOARD=CH32H417QEU6_V5F CROSS_COMPILE=${cross} firmware.bin
-    make ${MAKEOPTS} -C ports/ch32 BOARD=CH32H417QEU6_V3F CROSS_COMPILE=${cross}
-    ci_ch32_size_report ${cross}size
+    make ${MAKEOPTS} -C ports/ch32 BOARD=CH32H417QEU6_V5F CROSS_COMPILE=riscv-wch-elf- firmware.bin
+    make ${MAKEOPTS} -C ports/ch32 BOARD=CH32H417QEU6_V3F CROSS_COMPILE=riscv-wch-elf-
+    ci_ch32_size_report riscv-wch-elf-size
 }
 
 function ci_ch32_generic_build {
-    # A stock RISC-V GCC: no "xw", no WCH interrupt attribute, no bitmanip.
-    # Build-only, and deliberately so -- the vendored startup code and
-    # core_riscv.c are written for WCH's compiler, so this guards the port's own
-    # sources against quietly depending on WCH extensions and claims nothing
-    # about the image it produces.
+    # Stock GCC: no "xw", no WCH interrupt attribute, no bitmanip. This has to
+    # compile the vendor's core_riscv.c and startup assembly as well as the
+    # port's own code -- if it cannot, the combination is not usable and the
+    # build says so rather than quietly excluding them.
     make ${MAKEOPTS} -C mpy-cross
     make ${MAKEOPTS} -C ports/ch32 submodules
-    make ${MAKEOPTS} -C ports/ch32 BOARD=CH32H417QEU6_V5F CH32_TOOLCHAIN=generic CROSS_COMPILE=riscv64-unknown-elf-
-    make ${MAKEOPTS} -C ports/ch32 BOARD=CH32H417QEU6_V3F CH32_TOOLCHAIN=generic CROSS_COMPILE=riscv64-unknown-elf-
-    ci_ch32_size_report riscv64-unknown-elf-size
+    make ${MAKEOPTS} -C ports/ch32 BOARD=CH32H417QEU6_V5F CH32_TOOLCHAIN=generic CROSS_COMPILE=riscv-none-elf-
+    make ${MAKEOPTS} -C ports/ch32 BOARD=CH32H417QEU6_V3F CH32_TOOLCHAIN=generic CROSS_COMPILE=riscv-none-elf-
+    ci_ch32_size_report riscv-none-elf-size
 }
 
 function ci_stm32_pyb_build {
