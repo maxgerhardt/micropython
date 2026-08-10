@@ -54,6 +54,16 @@ SECTIONS
            fit here falls through to .highcode in the shared region. */
         */py/*.o(.text .text.*)
         */shared/runtime/*.o(.text .text.*)
+        /* framebuf's fill and blit are instruction-fetch bound out in the
+           shared region: they measure identically whether their pixels live
+           in DTCM or shared SRAM, because what limits them is fetching the
+           loop at HCLK while the core runs at 4x that. */
+        */extmod/modframebuf.o(.text .text.*)
+        /* ...and the fast paths that replace those loops, for the same
+           reason. Putting modframebuf here and leaving these behind would
+           just move the bottleneck. */
+        *framebuf_accel.o(.text .text.*)
+        *gpha.o(.text .text.*)
         . = ALIGN(4);
         PROVIDE(_itcm_vma_end = .);
     } >ITCM AT>FLASH

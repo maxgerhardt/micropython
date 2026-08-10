@@ -2190,6 +2190,15 @@ typedef time_t mp_timestamp_t;
 #define MICROPY_PY_FRAMEBUF (MICROPY_CONFIG_ROM_LEVEL_AT_LEAST_EXTRA_FEATURES)
 #endif
 
+// Let a port accelerate framebuf's rectangle fill and blit, typically with a
+// 2D DMA engine such as STM32's DMA2D or CH32H417's GPHA. The port supplies
+// mp_framebuf_accel_fill_rect() and mp_framebuf_accel_blit(); returning false
+// from either falls through to the generic implementation, so a port only has
+// to handle the cases it is actually faster at.
+#ifndef MICROPY_PY_FRAMEBUF_ACCEL
+#define MICROPY_PY_FRAMEBUF_ACCEL (0)
+#endif
+
 #ifndef MICROPY_PY_BTREE
 #define MICROPY_PY_BTREE (0)
 #endif

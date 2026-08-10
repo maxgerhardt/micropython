@@ -241,6 +241,29 @@ static mp_framebuf_p_t formats[] = {
     [FRAMEBUF_MHMSB] = {mono_horiz_setpixel, mono_horiz_getpixel, mono_horiz_fill_rect},
 };
 
+#if MICROPY_PY_FRAMEBUF_ACCEL
+// Supplied by the port. Both return true if they performed the operation, and
+// false to fall through to the generic code below, so a port can accelerate
+// only the formats and sizes where it actually wins.
+bool mp_framebuf_accel_fill_rect(void *buf, unsigned int stride, unsigned int format,
+    unsigned int x, unsigned int y, unsigned int w, unsigned int h, uint32_t col);
+bool mp_framebuf_accel_blit(void *dbuf, unsigned int dstride, unsigned int dformat,
+    unsigned int dx, unsigned int dy,
+    const void *sbuf, unsigned int sstride, unsigned int sformat,
+    unsigned int sx, unsigned int sy, unsigned int w, unsigned int h);
+#endif
+
+// Every fill goes through here rather than calling formats[].fill_rect
+// directly, so that a port hook sees fill() as well as fill_rect().
+static void fill_rect_dispatch(const mp_obj_framebuf_t *fb, unsigned int x, unsigned int y, unsigned int w, unsigned int h, uint32_t col) {
+    #if MICROPY_PY_FRAMEBUF_ACCEL
+    if (mp_framebuf_accel_fill_rect(fb->buf, fb->stride, fb->format, x, y, w, h, col)) {
+        return;
+    }
+    #endif
+    formats[fb->format].fill_rect(fb, x, y, w, h, col);
+}
+
 static inline void setpixel(const mp_obj_framebuf_t *fb, unsigned int x, unsigned int y, uint32_t col) {
     formats[fb->format].setpixel(fb, x, y, col);
 }
@@ -267,7 +290,7 @@ static void fill_rect(const mp_obj_framebuf_t *fb, int x, int y, int w, int h, u
     x = MAX(x, 0);
     y = MAX(y, 0);
 
-    formats[fb->format].fill_rect(fb, x, y, xend - x, yend - y, col);
+    fill_rect_dispatch(fb, x, y, xend - x, yend - y, col);
 }
 
 static mp_obj_t framebuf_make_new_helper(size_t n_args, const mp_obj_t *args_in, unsigned int buf_flags, mp_obj_framebuf_t *o) {
@@ -355,7 +378,7 @@ static mp_int_t framebuf_get_buffer(mp_obj_t self_in, mp_buffer_info_t *bufinfo,
 static mp_obj_t framebuf_fill(mp_obj_t self_in, mp_obj_t col_in) {
     mp_obj_framebuf_t *self = MP_OBJ_TO_PTR(self_in);
     mp_int_t col = mp_obj_get_int(col_in);
-    formats[self->format].fill_rect(self, 0, 0, self->width, self->height, col);
+    fill_rect_dispatch(self, 0, 0, self->width, self->height, col);
     return mp_const_none;
 }
 static MP_DEFINE_CONST_FUN_OBJ_2(framebuf_fill_obj, framebuf_fill);
@@ -762,6 +785,17 @@ static mp_obj_t framebuf_blit(size_t n_args, const mp_obj_t *args_in) {
     int y1 = MAX(0, -y);
     int x0end = MIN(self->width, x + source.width);
     int y0end = MIN(self->height, y + source.height);
+
+    #if MICROPY_PY_FRAMEBUF_ACCEL
+    // Only without a colour key or palette: an accelerator has no concept of
+    // "skip this one value", and the palette lookup is per pixel by nature.
+    if (key == -1 && palette.buf == NULL
+        && mp_framebuf_accel_blit(self->buf, self->stride, self->format, x0, y0,
+            source.buf, source.stride, source.format, x1, y1,
+            x0end - x0, y0end - y0)) {
+        return mp_const_none;
+    }
+    #endif
 
     for (; y0 < y0end; ++y0) {
         int cx1 = x1;

@@ -113,6 +113,11 @@
  * its framebuf tests instead of skipping them. */
 #define MICROPY_PY_FRAMEBUF             (1)
 
+/* Accelerate RGB565 fill and blit in ports/ch32/framebuf_accel.c: word-wise
+ * C fast paths, plus the GPHA for buffers outside DTCM where it is the faster
+ * of the two. See docs/hw/benchmarks.md for what each is worth. */
+#define MICROPY_PY_FRAMEBUF_ACCEL       (1)
+
 // time.sleep/ticks_* ride on the SysTick HAL via extmod's default bodies,
 // which call mp_hal_delay_ms/us and mp_hal_ticks_ms/us/cpu directly.
 #define MICROPY_PY_TIME                 (1)

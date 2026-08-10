@@ -120,6 +120,8 @@ SRC_C += \
 	machine_spi.c \
 	machine_dac.c \
 	machine_rtc.c \
+	gpha.c \
+	framebuf_accel.c \
 	system_ch32h417_$(CH32_CORE).c \
 	machine_wdt.c \
 	drivers/bus/softspi.c \

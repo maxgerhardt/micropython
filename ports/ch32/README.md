@@ -177,7 +177,8 @@ back.
 
 `test_i2c.py` verifies all of this against an SSD1306 OLED, and skips when
 nothing is attached. `framebuf` is enabled, so micropython-lib's display
-drivers work as-is.
+drivers work as-is — and its RGB565 `fill`/`fill_rect`/`blit` are accelerated,
+see "Accelerated framebuf" below.
 
 ## ADC
 
@@ -801,7 +802,7 @@ matter more on a board than they do in general:
 | Module / feature | Why it is on |
 |---|---|
 | `uctypes` | Lays a struct over a buffer or a peripheral register block without writing C. Enabling it also brings in 24 upstream tests. |
-| `framebuf` | Display drivers from micropython-lib work as-is. |
+| `framebuf` | Display drivers from micropython-lib work as-is; RGB565 fill and blit are accelerated. |
 | `machine.mem_backup` | See "Backup memory". |
 | `time.time()`, `localtime()`, `mktime()` | Answered by the RTC. |
 | Unicode `str` | So `"°C"` prints as `°C`. |
@@ -835,3 +836,38 @@ Example, reading a DHT frame back as named fields:
 Ethernet, RTC alarms, and the RV32 native emitter (which can be enabled
 later targeting plain RV32IMC — the core is a superset, so no `xw` support is
 needed in the emitter).
+
+## Accelerated framebuf
+
+RGB565 `fill()`, `fill_rect()` and `blit()` take a fast path in
+`framebuf_accel.c`: a word-wise fill and a per-line `memcpy`, with the GPHA
+(the chip's DMA2D-style 2D accelerator) used for blits whose buffers are
+outside DTCM. Everything else — the `MONO_*` and `GS*` formats, keyed and
+palette blits, overlapping self-blits — falls through to the generic
+implementation in `extmod/modframebuf.c`, unchanged.
+
+At 256x128 this is worth 7.6x on fill and 81.6x on blit. The full breakdown,
+including which of the three changes bought what, is in
+`docs/hw/benchmarks.md`; the short version is that most of it is *code
+placement*, not cleverness, and the GPHA itself contributes only 12-19% on
+blits into the shared region.
+
+Nothing here changes behaviour: the accelerated paths are required to produce
+byte-identical results, which `test_framebuf_gpha.py` checks by running every
+case under all three backends and comparing buffers.
+
+Backend selection, for benchmarking only:
+
+    import ch32
+    ch32.framebuf_accel(0)     # generic extmod code
+    ch32.framebuf_accel(1)     # C fast paths
+    ch32.framebuf_accel(2)     # C fast paths + GPHA (default)
+    ch32.framebuf_accel()      # report current mode
+    ch32.gpha_available()      # is the GPHA present on this die?
+    ch32.gpha_ops()            # transfers the GPHA has actually performed
+
+`gpha_available()` matters because the block is fused off on some lots — the
+datasheet says so, and the part number does not tell you. When it is absent
+everything still works, on the C paths.
+
+Run `python scripts/benchmark_framebuf.py` to reproduce the table.
