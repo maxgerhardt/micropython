@@ -183,6 +183,10 @@ $(BUILD)/firmware.elf: $(OBJ) $(LD_FILE)
 include coreboot.mk
 
 BOOT_V3F_ELF = boot_v3f/build/boot_v3f.elf
+# Only flash.sh is still out here: it drives OpenOCD against an attached board,
+# which is developer tooling rather than part of the build. merge_flash.py moved
+# into the port so that CI, which checks out this repository alone, can produce
+# firmware.bin.
 SCRIPTS = ../../../scripts
 
 $(BOOT_V3F_ELF):
@@ -197,7 +201,7 @@ deploy: $(BUILD)/firmware.bin
 
 $(BUILD)/firmware.bin: $(BUILD)/firmware.elf $(BOOT_V3F_ELF)
 	$(ECHO) "MERGE $@"
-	$(Q)$(PYTHON) $(SCRIPTS)/merge_flash.py -o $@ $(BOOT_V3F_ELF) $(BUILD)/firmware.elf
+	$(Q)CROSS_COMPILE=$(CROSS_COMPILE) $(PYTHON) merge_flash.py -o $@ $(BOOT_V3F_ELF) $(BUILD)/firmware.elf
 
 firmware.bin: $(BUILD)/firmware.bin
 else
