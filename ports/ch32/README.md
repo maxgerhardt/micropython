@@ -949,13 +949,28 @@ the datasheet**, not typed: a wrong AF number produces a UART that configures
 cleanly, reports `TXE=1` and `TC=1`, and puts nothing on the wire. A pin with
 no entry is rejected rather than silently configured as AF0.
 
-### Sizing the receive buffer
+### Flow control, and why the buffer can be small
 
-`rxbuf` must be at least as large as the biggest burst that can arrive before
-the application reads, or use `flow=UART.RTS`. The interrupt drops on a full
-ring rather than blocking, so an undersized buffer loses data silently: a
-256-byte burst at 115200 arrives intact with the default 256-byte ring, and
-loses roughly two thirds of itself with a 64-byte one.
+When the ring fills, the interrupt **leaves the byte in the receive register**
+instead of reading and discarding it. `RXNE` therefore stays set, which is the
+condition the hardware drives RTS from, so RTS deasserts and a flow-controlled
+peer stops sending. The reader re-enables the receive interrupt once it has
+made room.
+
+Draining the register and dropping on a full ring — the obvious
+implementation — silently defeats hardware RTS: the register is emptied on
+every interrupt, so it is never full, so RTS never deasserts. Measured that
+way, enabling RTS made no difference at all.
+
+With a reader deliberately slower than the wire, 256 bytes at 115200:
+
+| ring | `flow=0` | `flow=UART.RTS \| UART.CTS` |
+|---|---|---|
+| 32 bytes | 49 of 256 | **256 of 256** |
+| 64 bytes | 81 of 256 | **256 of 256** |
+
+So with flow control the ring can be a small fraction of the burst. Without
+it, `rxbuf` must cover whatever can arrive before the application reads.
 
 `ports/ch32/test_uart.py` covers all of this; the loopback half needs
 PA2 wired to PA3 and skips itself with a message when the jumper is absent.

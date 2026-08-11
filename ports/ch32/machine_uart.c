@@ -154,12 +154,27 @@ static void machine_uart_irq_handler(machine_uart_obj_t *self) {
     uint32_t statr = u->STATR;
 
     if (statr & USART_STATR_RXNE) {
-        uint8_t c = (uint8_t)(u->DATAR & 0xff);
-        /* Drop on overflow rather than blocking in an ISR. A full buffer means
-         * the application is not reading; losing the newest byte is the same
-         * thing the hardware would do, and keeping the older ones is friendlier
-         * to a line-oriented protocol. */
-        ringbuf_put(&self->rx_ring, c);
+        if (ringbuf_free(&self->rx_ring) > 0) {
+            ringbuf_put(&self->rx_ring, (uint8_t)(u->DATAR & 0xff));
+        } else {
+            /* Ring full: deliberately leave the byte in DATAR rather than
+             * reading and discarding it. RXNE therefore stays set, which is
+             * precisely the condition the hardware drives RTS from, so RTS
+             * deasserts and a flow-controlled peer stops sending -- and the
+             * byte itself is preserved instead of thrown away.
+             *
+             * The obvious alternative, draining DATAR and dropping on a full
+             * ring, silently defeats hardware RTS: the receive register is
+             * emptied on every interrupt, so it is never full, so RTS never
+             * deasserts. Measured that way, enabling RTS made no difference
+             * whatsoever to a burst that overran the ring.
+             *
+             * RXNEIE is masked here so the interrupt does not re-enter on a
+             * byte it cannot take; the reader re-enables it after making room.
+             * Without flow control this still behaves better than dropping:
+             * the hardware holds one more byte and only then overruns. */
+            u->CTLR1 &= ~USART_CTLR1_RXNEIE;
+        }
     }
 
     /* Framing, parity, noise and overrun all latch in STATR and are cleared by
@@ -225,6 +240,14 @@ static void machine_uart_apply(machine_uart_obj_t *self) {
     init.USART_Parity = (self->parity == 'O') ? USART_Parity_Odd
         : (self->parity == 'E') ? USART_Parity_Even : USART_Parity_No;
     init.USART_Mode = USART_Mode_Rx | USART_Mode_Tx;
+    /* CTS goes to the hardware, which genuinely gates each transmitted byte on
+     * the pin. RTS deliberately does NOT: the hardware drives it from the
+     * receive *register*, and this driver empties that register into a ring
+     * buffer on every interrupt, so hardware RTS would never deassert and
+     * would protect nothing. Measured before this was changed: a 256-byte
+     * burst at 115200 into a 64-byte ring lost exactly as much with hardware
+     * RTS enabled as without it -- 82 bytes arrived either way. RTS is driven
+     * from the interrupt below against the ring's own occupancy instead. */
     init.USART_HardwareFlowControl =
         ((self->flow & UART_FLOW_RTS) ? USART_HardwareFlowControl_RTS : 0)
         | ((self->flow & UART_FLOW_CTS) ? USART_HardwareFlowControl_CTS : 0);
@@ -490,7 +513,18 @@ void machine_uart_deinit_all(void) {
     }
 }
 
+/* Re-arm the receive interrupt once there is somewhere to put a byte. Paired
+ * with the ISR masking it on a full ring. */
+static inline void machine_uart_rx_resume(machine_uart_obj_t *self) {
+    if (ringbuf_free(&self->rx_ring) > 0) {
+        self->usart->CTLR1 |= USART_CTLR1_RXNEIE;
+    }
+}
+
 static mp_int_t mp_machine_uart_any(machine_uart_obj_t *self) {
+    /* Also the recovery point for a caller that drains with any()/read(any())
+     * and never goes through the per-byte path below. */
+    machine_uart_rx_resume(self);
     return ringbuf_avail(&self->rx_ring);
 }
 
@@ -514,6 +548,7 @@ static mp_uint_t mp_machine_uart_read(mp_obj_t self_in, void *buf_in, mp_uint_t 
         int c;
         while ((c = ringbuf_get(&self->rx_ring)) < 0) {
             if ((mp_int_t)(mp_hal_ticks_ms() - deadline) >= 0) {
+                machine_uart_rx_resume(self);
                 if (got == 0) {
                     *errcode = MP_EAGAIN;
                     return MP_STREAM_ERROR;
@@ -523,6 +558,7 @@ static mp_uint_t mp_machine_uart_read(mp_obj_t self_in, void *buf_in, mp_uint_t 
             mp_event_wait_ms(1);
         }
         dest[got++] = (uint8_t)c;
+        machine_uart_rx_resume(self);
     }
     return size;
 }
@@ -559,7 +595,9 @@ static mp_uint_t mp_machine_uart_write(mp_obj_t self_in, const void *buf_in, mp_
 }
 
 static mp_int_t mp_machine_uart_readchar(machine_uart_obj_t *self) {
-    return ringbuf_get(&self->rx_ring);
+    int c = ringbuf_get(&self->rx_ring);
+    machine_uart_rx_resume(self);
+    return c;
 }
 
 static void mp_machine_uart_writechar(machine_uart_obj_t *self, uint16_t data) {

@@ -80,8 +80,11 @@ for kw, val in (("bits", 4), ("bits", 10), ("stop", 3)):
         check("reject %s=%d" % (kw, val), True)
 
 # Flow control without the pin it needs would look configured and do nothing.
+# On UART3, which nothing else here gives an rts pin: UART(id) is a singleton
+# and remembers pins, so asking this of UART2 would pass or fail depending on
+# what ran before it -- including in an earlier run of this file.
 try:
-    UART(2, 9600, tx=Pin.cpu.PA2, rx=Pin.cpu.PA3, flow=UART.RTS)
+    UART(3, 9600, tx=Pin.cpu.PB10, rx=Pin.cpu.PB11, flow=UART.RTS)
     check("flow=RTS without rts= rejected", False)
 except ValueError:
     check("flow=RTS without rts= rejected", True)
@@ -91,7 +94,7 @@ check("UART.RTS/CTS distinct", UART.RTS != UART.CTS and UART.RTS and UART.CTS)
 # --- transmit timing, which needs no receiver ---
 # 200 bytes of 8N1 is 2000 bit times. A txbuf smaller than the payload also
 # proves the interrupt is draining the ring rather than the write blocking.
-u3 = UART(2, 9600, tx=Pin.cpu.PA2, rx=Pin.cpu.PA3, txbuf=16)
+u3 = UART(2, 9600, tx=Pin.cpu.PA2, rx=Pin.cpu.PA3, txbuf=16, bits=8, parity=None, stop=1, flow=0)
 payload = b"U" * 200
 t0 = time.ticks_ms()
 u3.write(payload)
@@ -100,7 +103,7 @@ while not u3.txdone():
 dt = time.ticks_diff(time.ticks_ms(), t0)
 check("200B at 9600 takes ~208ms", 195 <= dt <= 235, "got %d ms" % dt)
 
-u4 = UART(2, 115200, tx=Pin.cpu.PA2, rx=Pin.cpu.PA3, txbuf=16)
+u4 = UART(2, 115200, tx=Pin.cpu.PA2, rx=Pin.cpu.PA3, txbuf=16, bits=8, parity=None, stop=1, flow=0)
 t0 = time.ticks_ms()
 u4.write(payload)
 while not u4.txdone():
@@ -112,7 +115,7 @@ check("txdone true when idle", u4.txdone())
 
 # A read with nothing to return must time out rather than hang. Drain first:
 # with the loopback jumper fitted everything written above has come back.
-u5 = UART(2, 9600, tx=Pin.cpu.PA2, rx=Pin.cpu.PA3, timeout=50)
+u5 = UART(2, 9600, tx=Pin.cpu.PA2, rx=Pin.cpu.PA3, timeout=50, flow=0)
 time.sleep_ms(20)
 while u5.any():
     u5.read(u5.any())
@@ -123,7 +126,18 @@ check("read times out", got is None, repr(got))
 check("read honours timeout", 30 <= dt <= 200, "got %d ms" % dt)
 
 # --- loopback, if the jumper is fitted ---
-lb = UART(2, 9600, tx=Pin.cpu.PA2, rx=Pin.cpu.PA3, timeout=200)
+lb = UART(
+    2,
+    9600,
+    tx=Pin.cpu.PA2,
+    rx=Pin.cpu.PA3,
+    timeout=200,
+    bits=8,
+    parity=None,
+    stop=1,
+    flow=0,
+    rxbuf=256,
+)
 lb.write(b"probe")
 time.sleep_ms(50)
 if lb.any() == 0:
@@ -131,7 +145,18 @@ if lb.any() == 0:
 else:
     lb.read(lb.any())  # drain the probe; sized, since read-all never sees EOF
     for baud in (9600, 115200, 921600):
-        v = UART(2, baud, tx=Pin.cpu.PA2, rx=Pin.cpu.PA3, timeout=500)
+        v = UART(
+            2,
+            baud,
+            tx=Pin.cpu.PA2,
+            rx=Pin.cpu.PA3,
+            timeout=500,
+            bits=8,
+            parity=None,
+            stop=1,
+            flow=0,
+            rxbuf=256,
+        )
         # Drain first: reconfiguring does not empty the ring, so anything the
         # previous iteration left would prepend itself to this one's frame.
         time.sleep_ms(20)
@@ -148,7 +173,18 @@ else:
     # reading a packet actually looks like.
     big = bytes((i & 0xFF) for i in range(256))
 
-    v = UART(2, 115200, tx=Pin.cpu.PA2, rx=Pin.cpu.PA3, timeout=1000, rxbuf=512)
+    v = UART(
+        2,
+        115200,
+        tx=Pin.cpu.PA2,
+        rx=Pin.cpu.PA3,
+        timeout=1000,
+        rxbuf=512,
+        bits=8,
+        parity=None,
+        stop=1,
+        flow=0,
+    )
     v.write(big)
     out = bytearray()
     t0 = time.ticks_ms()
@@ -188,7 +224,17 @@ else:
         check("parity %s round trip" % name, v.read(6) == b"parity")
 
     for st in (0.5, 1, 1.5, 2):
-        v = UART(2, 9600, tx=Pin.cpu.PA2, rx=Pin.cpu.PA3, timeout=300, stop=st)
+        v = UART(
+            2,
+            9600,
+            tx=Pin.cpu.PA2,
+            rx=Pin.cpu.PA3,
+            timeout=300,
+            stop=st,
+            bits=8,
+            parity=None,
+            flow=0,
+        )
         time.sleep_ms(20)
         while v.any():
             v.read(v.any())
