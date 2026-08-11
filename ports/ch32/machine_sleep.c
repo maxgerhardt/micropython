@@ -136,11 +136,17 @@ void machine_sleep_light(mp_int_t ms) {
  * LPTIM_LP_WakeUp example does. Verified against a software trigger through
  * SWIEVR, which does set the flag on line 23, so the base address, offsets and
  * masks are all correct; and against the RTC alarm, which does drive line 17.
- * The line may be asserted only from inside a low-power mode, where a running
- * core cannot observe it -- WCH's example only ever looks at it from Sleep --
- * but that cannot be confirmed without betting the board on it, and an
- * unverified wake source in Stop mode means a chip that never wakes and needs
- * its power cycled.
+ * Confirmed from inside Stop, not merely inferred from the awake test: with
+ * LPTIM1 armed for 2 s and an IWDG backstop at 8 s, the board came back after
+ * 7.94 s and a marker in retained RAM showed it had never returned from
+ * PWR_EnterSTOPMode(). The LPTIM wake simply does not happen.
+ *
+ * The manual does say so, just not in the LPTIM chapter. 17.3.13 claims "the
+ * LPTIM peripheral is active when it is timed by LSE or LSI, and the LPTIM
+ * interrupt causes the device to exit stop mode", but 2.3.3 lists what
+ * actually survives Stop -- "Independent Watchdog Dog (IWDG), Real Time Clock
+ * (RTC), Low Frequency Clock (LSI/LSE)" -- and LPTIM is not in it. Where the
+ * two disagree, the mode chapter is the one that matches the silicon.
  *
  * So both wake sources here are ones that were checked first. Table 2-1 lists
  * exactly three ways out of Stop: an external interrupt or event, NRST, and an
