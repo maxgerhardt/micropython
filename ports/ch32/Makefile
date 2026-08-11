@@ -62,6 +62,8 @@ CH32_TOOLCHAIN ?= wch
 ifeq ($(CH32_TOOLCHAIN),wch)
 ARCHFLAGS = -march=rv32imafc_zba_zbb_zbc_zbs_xw -mabi=ilp32f
 CFLAGS += -DCH32_TOOLCHAIN_WCH=1
+# Globals up to 8 bytes go in .sdata, reached gp-relative in one instruction.
+CH32_SMALL_DATA_LIMIT = 8
 else
 # zifencei has to be named explicitly. Modern GCC split fence.i out of the base
 # "i" extension, and the vendor's core_riscv.h emits it inline, so without this
@@ -70,6 +72,14 @@ else
 # why only this side needs it.
 ARCHFLAGS = -march=rv32imafc_zifencei -mabi=ilp32f
 CFLAGS += -DCH32_TOOLCHAIN_WCH=0
+# No small-data section for this toolchain. gp-relative addressing reaches
+# +/-2 KB, and xpack's libgcc and picolibc put enough of their own objects in
+# .sdata that adding to it overflows the window -- the link then fails inside
+# libgcc with "relocation truncated to fit: R_RISCV_GPREL_I against .L20" in
+# __divdf3 and __clzsi2, which is a confusing place to land for a problem
+# caused by the application's data. WCH's toolchain packs less in there and
+# keeps the optimisation.
+CH32_SMALL_DATA_LIMIT = 0
 # Ubuntu ships its bare-metal RISC-V toolchain with Picolibc rather than Newlib,
 # and defaults to "nosys", so without naming a C library every translation unit
 # fails on <stdint.h>. ports/qemu carries the same block for the same reason.
@@ -92,7 +102,7 @@ endif
 
 CFLAGS += $(INC) $(ARCHFLAGS) $(CFLAGS_BOARD) \
 	-std=gnu11 -Wall -Wno-comment \
-	-msmall-data-limit=8 -mno-save-restore \
+	-msmall-data-limit=$(CH32_SMALL_DATA_LIMIT) -mno-save-restore \
 	-ffunction-sections -fdata-sections \
 	-fsingle-precision-constant \
 	-DMICROPY_FLOAT_IMPL=MICROPY_FLOAT_IMPL_FLOAT \
