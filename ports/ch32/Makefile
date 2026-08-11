@@ -120,6 +120,7 @@ SRC_C += \
 	machine_spi.c \
 	machine_dac.c \
 	machine_rtc.c \
+	machine_sleep.c \
 	gpha.c \
 	framebuf_accel.c \
 	system_ch32h417_$(CH32_CORE).c \

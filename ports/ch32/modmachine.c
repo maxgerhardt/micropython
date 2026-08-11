@@ -14,6 +14,7 @@
  * object here to be reachable from the module globals below. */
 #include "machine_dac.h"
 #include "machine_rtc.h"
+#include "machine_sleep.h"
 #include "machine_wdt.h"
 
 /* --- module-level hooks required by extmod/modmachine.c --- */
@@ -39,19 +40,11 @@ static void mp_machine_set_freq(size_t n_args, const mp_obj_t *args) {
 }
 
 static void mp_machine_lightsleep(size_t n_args, const mp_obj_t *args) {
-    if (n_args != 0) {
-        mp_hal_delay_ms(mp_obj_get_int(args[0]));
-    } else {
-        __asm volatile ("wfi");
-    }
+    machine_sleep_light(n_args != 0 ? mp_obj_get_int(args[0]) : -1);
 }
 
 MP_NORETURN static void mp_machine_deepsleep(size_t n_args, const mp_obj_t *args) {
-    (void)n_args;
-    (void)args;
-    NVIC_SystemReset();
-    for (;;) {
-    }
+    machine_sleep_deep(n_args != 0 ? mp_obj_get_int(args[0]) : -1);
 }
 
 MP_NORETURN static void mp_machine_reset(void) {
@@ -78,5 +71,5 @@ static mp_int_t mp_machine_reset_cause(void) {
     { MP_ROM_QSTR(MP_QSTR_PWRON_RESET), MP_ROM_INT(CH32_RESET_PWRON) }, \
     { MP_ROM_QSTR(MP_QSTR_HARD_RESET), MP_ROM_INT(CH32_RESET_HARD) }, \
     { MP_ROM_QSTR(MP_QSTR_WDT_RESET), MP_ROM_INT(CH32_RESET_WDT) }, \
-    { MP_ROM_QSTR(MP_QSTR_SOFT_RESET), MP_ROM_INT(CH32_RESET_SOFT) }, \
+    { MP_ROM_QSTR(MP_QSTR_SOFT_RESET), MP_ROM_INT(CH32_RESET_SOFT) },     { MP_ROM_QSTR(MP_QSTR_DEEPSLEEP_RESET), MP_ROM_INT(CH32_RESET_DEEPSLEEP) }, \
     { MP_ROM_QSTR(MP_QSTR_dht_readinto), MP_ROM_PTR(&dht_readinto_obj) },

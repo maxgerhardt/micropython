@@ -74,7 +74,14 @@ int main(void) {
      * It is still reachable in principle, because that helper returns once a
      * wake source fires, and a `nop` loop here would then spin the core at
      * full clock forever. WFI costs nothing and cannot do that. */
+    /* Re-enter, rather than a bare __WFI(). machine.deepsleep() on the V5F
+     * relies on this core permanently requesting Stop -- RM 2.3, "the stop
+     * mode only takes effect when both V3F and V5F enter stop mode" -- and
+     * PWR_EnterSTOPMode() clears its own SLEEPDEEP on the way out. A plain
+     * WFI here would leave this core in shallow sleep after any wake, and
+     * deepsleep would silently degrade to Sleep mode from then on: still
+     * correct, but no longer saving the power that is the whole point. */
     for (;;) {
-        __WFI();
+        PWR_EnterSTOPMode(PWR_Regulator_LowPower, PWR_STOPEntry_WFE);
     }
 }

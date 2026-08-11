@@ -13,4 +13,13 @@ void machine_rtc_init_boot(void);
  * case neither output is touched. */
 bool machine_rtc_get(uint32_t *seconds, uint32_t *microseconds);
 
+/* Arm the alarm `seconds` from now, so it can end a machine.deepsleep().
+ * False if no oscillator is running. Granularity is one whole second: the
+ * alarm is a bare comparator against the same 32-bit second counter, and this
+ * RTC has nothing finer. machine_sleep.c uses LPTIM below the crossover. */
+bool machine_rtc_alarm_in(uint32_t seconds);
+
+/* Disarm and clear a pending alarm. Safe to call when none was armed. */
+void machine_rtc_alarm_clear(void);
+
 #endif // MICROPY_INCLUDED_CH32_MACHINE_RTC_H

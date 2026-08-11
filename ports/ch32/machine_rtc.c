@@ -315,6 +315,38 @@ bool machine_rtc_get(uint32_t *seconds, uint32_t *microseconds) {
     return true;
 }
 
+bool machine_rtc_alarm_in(uint32_t seconds) {
+    if (machine_rtc_source == 0 || seconds == 0) {
+        return false;
+    }
+    /* The counter is unsigned and free-running, so an alarm that wraps past
+     * 2^32 still compares equal at the right moment -- no clamping needed. */
+    uint32_t target = RTC_GetCounter() + seconds;
+
+    if (!machine_rtc_wait_write()) {
+        return false;
+    }
+    RTC_ClearFlag(RTC_FLAG_ALR);
+    RTC_SetAlarm(target);           /* enters and exits config mode itself */
+    if (!machine_rtc_wait_write()) {
+        return false;
+    }
+    RTC_ITConfig(RTC_IT_ALR, ENABLE);
+    return machine_rtc_wait_write();
+}
+
+void machine_rtc_alarm_clear(void) {
+    if (machine_rtc_source == 0) {
+        return;
+    }
+    if (!machine_rtc_wait_write()) {
+        return;
+    }
+    RTC_ITConfig(RTC_IT_ALR, DISABLE);
+    machine_rtc_wait_write();
+    RTC_ClearFlag(RTC_FLAG_ALR);
+}
+
 void machine_rtc_init_boot(void) {
     /* LSE by default because this board has the crystal. If it is missing, or
      * has not started, fall back to the internal RC rather than leaving the

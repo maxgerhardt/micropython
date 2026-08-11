@@ -24,6 +24,7 @@
 #include "py/mphal.h"
 #include "py/runtime.h"
 
+#include "machine_sleep.h"
 #include "machine_wdt.h"
 
 /* Nominal LSI. See the file comment before trusting it to better than a factor
@@ -40,6 +41,14 @@ typedef struct _machine_wdt_obj_t {
 } machine_wdt_obj_t;
 
 static const machine_wdt_obj_t machine_wdt_singleton = { { &machine_wdt_type } };
+
+/* Set once the IWDG has been started. There is no way to ask the hardware:
+ * IWDG_Enable() is one-way, with no disable and no status bit for "armed". */
+static bool machine_wdt_running;
+
+bool machine_wdt_is_running(void) {
+    return machine_wdt_running;
+}
 
 /* Smallest prescaler that fits the timeout, because the prescaler is also the
  * resolution: at the top of the range one count is 6.4 ms. */
@@ -70,6 +79,42 @@ static void machine_wdt_start(mp_int_t timeout_ms) {
     IWDG_SetReload((uint16_t)reload);
     IWDG_ReloadCounter();
     IWDG_Enable();
+    machine_wdt_running = true;
+}
+
+/* Same as above but reports failure instead of raising, because deepsleep()
+ * calls it to pick a wake source and has a second option to fall back to. */
+bool machine_wdt_start_raw(uint32_t timeout_ms) {
+    uint32_t ticks_needed = (uint32_t)(((uint64_t)timeout_ms * WDT_LSI_HZ + 999) / 1000);
+    uint32_t prescaler = IWDG_PRESCALER_MIN;
+    uint8_t psc_code = IWDG_Prescaler_4;
+    while (ticks_needed / prescaler > IWDG_RELOAD_MAX && prescaler < IWDG_PRESCALER_MAX) {
+        prescaler *= 2;
+        psc_code++;
+    }
+    uint32_t reload = (ticks_needed + prescaler - 1) / prescaler;
+    if (reload > IWDG_RELOAD_MAX) {
+        return false;
+    }
+    if (reload == 0) {
+        reload = 1;
+    }
+
+    RCC_LSICmd(ENABLE);
+    mp_uint_t start = mp_hal_ticks_ms();
+    while (RCC_GetFlagStatus(RCC_FLAG_LSIRDY) == RESET) {
+        if ((mp_uint_t)(mp_hal_ticks_ms() - start) > 100) {
+            return false;
+        }
+    }
+
+    IWDG_WriteAccessCmd(IWDG_WriteAccess_Enable);
+    IWDG_SetPrescaler(psc_code);
+    IWDG_SetReload((uint16_t)reload);
+    IWDG_ReloadCounter();
+    IWDG_Enable();
+    machine_wdt_running = true;
+    return true;
 }
 
 static void machine_wdt_print(const mp_print_t *print, mp_obj_t self_in, mp_print_kind_t kind) {
@@ -131,14 +176,26 @@ MP_DEFINE_CONST_OBJ_TYPE(
 static uint8_t machine_wdt_reset_cause_value;
 
 void machine_wdt_reset_cause_init(void) {
-    if (RCC_GetFlagStatus(RCC_FLAG_IWDGRST) != RESET) {
+    /* Checked first because deepsleep is *implemented* as a software reset, so
+     * SFTRST is set too and would otherwise mask it. The flag it reads lives
+     * in RAM that survives a reset but not a power cycle, which is what makes
+     * the distinction possible at all -- this chip has no backup registers. */
+    if (machine_sleep_deepsleep_flag_take()) {
+        machine_wdt_reset_cause_value = CH32_RESET_DEEPSLEEP;
+    } else if (RCC_GetFlagStatus(RCC_FLAG_IWDGRST) != RESET) {
         machine_wdt_reset_cause_value = CH32_RESET_WDT;
+    } else if (RCC_GetFlagStatus(RCC_FLAG_PORRST) != RESET) {
+        /* Ahead of SFTRST, which is always set on this core: the V3F stub
+         * starts the V5F through NVIC_WakeUp_V5F, and that leaves the software
+         * reset flag behind on every boot. Testing SFTRST first made a genuine
+         * power-on report SOFT_RESET, so PWRON_RESET was unreachable. The
+         * flags do not accumulate across boots -- RCC_ClearFlag() below sees
+         * to that -- so PORRST really does mean this boot was a power-on. */
+        machine_wdt_reset_cause_value = CH32_RESET_PWRON;
     } else if (RCC_GetFlagStatus(RCC_FLAG_SFTRST) != RESET) {
         machine_wdt_reset_cause_value = CH32_RESET_SOFT;
     } else if (RCC_GetFlagStatus(RCC_FLAG_PINRST) != RESET) {
         machine_wdt_reset_cause_value = CH32_RESET_HARD;
-    } else if (RCC_GetFlagStatus(RCC_FLAG_PORRST) != RESET) {
-        machine_wdt_reset_cause_value = CH32_RESET_PWRON;
     } else {
         machine_wdt_reset_cause_value = 0;
     }

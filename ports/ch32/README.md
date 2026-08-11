@@ -871,3 +871,41 @@ datasheet says so, and the part number does not tell you. When it is absent
 everything still works, on the C paths.
 
 Run `python scripts/benchmark_framebuf.py` to reproduce the table.
+
+## Sleep modes
+
+The chip has two low-power modes and no standby, so the mapping is forced:
+
+| Call | Mode | Behaviour |
+|---|---|---|
+| `machine.lightsleep([ms])` | Sleep | Core clock off, peripherals and RAM live, **execution resumes**. Any interrupt ends it early. |
+| `machine.deepsleep([ms])` | Stop | Every clock off, then a **reset** on wake, as the API documents. |
+
+    import machine
+    machine.lightsleep(500)        # resumes on the next line
+    machine.lightsleep()           # until any interrupt
+    machine.deepsleep(5000)        # never returns; reboots after ~5 s
+    machine.reset_cause() == machine.DEEPSLEEP_RESET
+
+`deepsleep()` resets rather than resuming because waking from Stop leaves the
+system on HSI with every PLL disabled, and the clock-tree setup lives in the
+V3F stub, not in the V5F image. Resetting hands that job back to the stub,
+which does it exactly as it does at power-on — so honouring MicroPython's
+"never returns" contract is also what restores the clocks.
+
+Timed wake uses the IWDG below about 26 s, which gives millisecond granularity
+(`deepsleep(3000)` measured 3.05 s against a host clock), and the RTC alarm
+above it, which is unbounded but rounds up to a whole second. If the
+application already has a `machine.WDT` running, the IWDG is left alone and the
+RTC alarm is used instead. `deepsleep()` with no argument waits for an external
+interrupt — with none configured, that means until NRST or a power cycle.
+
+Note that LPTIM is *not* used, despite the reference manual mapping it to
+EXTI 23 as a wakeup source: on this silicon it never asserts that line. The
+measurements are in `docs/hw/ch32h417-notes.md`, along with how to recover a
+board that was stopped with no working wake source (`wlink set-power`, because
+the debug interface is clock-gated too).
+
+`ports/ch32/test_sleep.py` covers lightsleep on target; `scripts/test_sleep.py`
+drives deepsleep from the host, since a test running on the board cannot
+survive its own reset.
