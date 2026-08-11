@@ -108,6 +108,19 @@
 #define MICROPY_PY_MACHINE_ADC_INCLUDEFILE "ports/ch32/machine_adc.c"
 #define MICROPY_PY_MACHINE_ADC_READ_UV  (1)
 
+/* machine.UART on USART2-8, interrupt-driven in both directions through ring
+ * buffers, with hardware RTS/CTS. USART1 is deliberately excluded: it carries
+ * the REPL console and is owned by uart.c. Pin choice is how this part does
+ * "remapping" -- it has an STM32F4-style per-pin AF mux, so any pin the
+ * datasheet lists for a signal works. See machine_uart_pins.h. */
+/* Without this the stream layer raises OSError(EAGAIN) when a read times out,
+ * instead of returning None as UART.read() is documented to do. */
+#define MICROPY_STREAMS_NON_BLOCK       (1)
+#define MICROPY_PY_MACHINE_UART         (1)
+#define MICROPY_PY_MACHINE_UART_INCLUDEFILE "ports/ch32/machine_uart.c"
+#define MICROPY_PY_MACHINE_UART_SENDBREAK (1)
+#define MICROPY_PY_MACHINE_UART_READCHAR_WRITECHAR (1)
+
 /* framebuf is what every display driver in micropython-lib builds on -- an
  * SSD1306 is unusable without it -- and it also lets the upstream suite run
  * its framebuf tests instead of skipping them. */

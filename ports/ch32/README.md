@@ -909,3 +909,53 @@ the debug interface is clock-gated too).
 `ports/ch32/test_sleep.py` covers lightsleep on target; `scripts/test_sleep.py`
 drives deepsleep from the host, since a test running on the board cannot
 survive its own reset.
+
+## UART
+
+    from machine import UART, Pin
+    u = UART(2, 115200, tx=Pin.cpu.PA2, rx=Pin.cpu.PA3)
+    u.write(b"hello")
+    u.read(5)                       # None if nothing arrives within timeout
+
+USART2-8 are available. **USART1 is not**: it carries the REPL console, and
+handing it to a script would take the console away mid-session.
+
+Both directions are interrupt-driven through ring buffers, sized with `rxbuf=`
+and `txbuf=` (256 bytes each by default). A write returns as soon as the data
+fits, so only a full TX buffer blocks; bytes arriving while Python is busy are
+collected by the interrupt rather than lost.
+
+| Parameter | Accepted |
+|---|---|
+| `baudrate` | verified 9600 to 921600 on a loopback |
+| `bits` | 5-9 **data** bits; the parity bit is added on top by the driver |
+| `parity` | `None`, `0` (even), `1` (odd) |
+| `stop` | `0.5`, `1`, `1.5`, `2` — a float, since the hardware really has all four |
+| `flow` | `UART.RTS`, `UART.CTS`, or both; needs the matching `rts=`/`cts=` pin |
+| `timeout`, `timeout_char` | ms; `timeout_char` is floored at one character time |
+
+### Pin choice is how this part does "remapping"
+
+The H417 has an STM32F4-style per-pin alternate-function mux, not the
+CH32V307/STM32F1 remap-bit scheme, so a UART is moved by naming different pins
+rather than by setting a remap bit — and **every** pin the datasheet lists for
+a signal works:
+
+    UART(2, 115200, tx=Pin.cpu.PA2, rx=Pin.cpu.PA3)   # primary
+    UART(2, 115200, tx=Pin.cpu.PD5, rx=Pin.cpu.PD6)   # same UART, other pins
+
+`machine_uart_pins.h` holds all 82 pin/AF combinations and is **generated from
+the datasheet**, not typed: a wrong AF number produces a UART that configures
+cleanly, reports `TXE=1` and `TC=1`, and puts nothing on the wire. A pin with
+no entry is rejected rather than silently configured as AF0.
+
+### Sizing the receive buffer
+
+`rxbuf` must be at least as large as the biggest burst that can arrive before
+the application reads, or use `flow=UART.RTS`. The interrupt drops on a full
+ring rather than blocking, so an undersized buffer loses data silently: a
+256-byte burst at 115200 arrives intact with the default 256-byte ring, and
+loses roughly two thirds of itself with a 64-byte one.
+
+`ports/ch32/test_uart.py` covers all of this; the loopback half needs
+PA2 wired to PA3 and skips itself with a message when the jumper is absent.
