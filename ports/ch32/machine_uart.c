@@ -73,7 +73,7 @@ typedef struct _machine_uart_obj_t {
  * going through Python, and the buffers must outlive any particular reference,
  * so the live UARTs are rooted here and registered with the GC. */
 static machine_uart_obj_t *machine_uart_objs[UART_ID_MAX];
-MP_REGISTER_ROOT_POINTER(struct _machine_uart_obj_t * machine_uart_obj_all[8]);
+MP_REGISTER_ROOT_POINTER(struct _machine_uart_obj_t *machine_uart_obj_all[8]);
 
 static USART_TypeDef *const machine_uart_regs[UART_ID_MAX] = {
     USART1, USART2, USART3, USART4, USART5, USART6, USART7, USART8,

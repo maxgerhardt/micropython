@@ -28,15 +28,15 @@ typedef struct _uart_pin_af_t {
 
 static const uart_pin_af_t uart_pin_af_table[] = {
     // USART1 TX
-    { 1, UART_SIG_TX ,   9,  7 },  // PA9
-    { 1, UART_SIG_TX ,  22,  7 },  // PB6
-    { 1, UART_SIG_TX ,  30,  4 },  // PB14
-    { 1, UART_SIG_TX ,  61, 14 },  // PD13
+    { 1, UART_SIG_TX,   9,  7 },   // PA9
+    { 1, UART_SIG_TX,  22,  7 },   // PB6
+    { 1, UART_SIG_TX,  30,  4 },   // PB14
+    { 1, UART_SIG_TX,  61, 14 },   // PD13
     // USART1 RX
-    { 1, UART_SIG_RX ,  10,  7 },  // PA10
-    { 1, UART_SIG_RX ,  23,  7 },  // PB7
-    { 1, UART_SIG_RX ,  31,  4 },  // PB15
-    { 1, UART_SIG_RX ,  60, 14 },  // PD12
+    { 1, UART_SIG_RX,  10,  7 },   // PA10
+    { 1, UART_SIG_RX,  23,  7 },   // PB7
+    { 1, UART_SIG_RX,  31,  4 },   // PB15
+    { 1, UART_SIG_RX,  60, 14 },   // PD12
     // USART1 CTS
     { 1, UART_SIG_CTS,  11,  7 },  // PA11
     { 1, UART_SIG_CTS,  63, 14 },  // PD15
@@ -44,11 +44,11 @@ static const uart_pin_af_t uart_pin_af_table[] = {
     { 1, UART_SIG_RTS,  12,  7 },  // PA12
     { 1, UART_SIG_RTS,  62, 14 },  // PD14
     // USART2 TX
-    { 2, UART_SIG_TX ,   2,  7 },  // PA2
-    { 2, UART_SIG_TX ,  53,  7 },  // PD5
+    { 2, UART_SIG_TX,   2,  7 },   // PA2
+    { 2, UART_SIG_TX,  53,  7 },   // PD5
     // USART2 RX
-    { 2, UART_SIG_RX ,   3,  7 },  // PA3
-    { 2, UART_SIG_RX ,  54,  7 },  // PD6
+    { 2, UART_SIG_RX,   3,  7 },   // PA3
+    { 2, UART_SIG_RX,  54,  7 },   // PD6
     // USART2 CTS
     { 2, UART_SIG_CTS,   0,  7 },  // PA0
     { 2, UART_SIG_CTS,  51,  7 },  // PD3
@@ -56,15 +56,15 @@ static const uart_pin_af_t uart_pin_af_table[] = {
     { 2, UART_SIG_RTS,   1,  7 },  // PA1
     { 2, UART_SIG_RTS,  52,  7 },  // PD4
     // USART3 TX
-    { 3, UART_SIG_TX ,  13,  4 },  // PA13
-    { 3, UART_SIG_TX ,  26,  7 },  // PB10
-    { 3, UART_SIG_TX ,  42,  7 },  // PC10
-    { 3, UART_SIG_TX ,  78,  7 },  // PE14
+    { 3, UART_SIG_TX,  13,  4 },   // PA13
+    { 3, UART_SIG_TX,  26,  7 },   // PB10
+    { 3, UART_SIG_TX,  42,  7 },   // PC10
+    { 3, UART_SIG_TX,  78,  7 },   // PE14
     // USART3 RX
-    { 3, UART_SIG_RX ,  14,  4 },  // PA14
-    { 3, UART_SIG_RX ,  27,  7 },  // PB11
-    { 3, UART_SIG_RX ,  43,  7 },  // PC11
-    { 3, UART_SIG_RX ,  57,  7 },  // PD9
+    { 3, UART_SIG_RX,  14,  4 },   // PA14
+    { 3, UART_SIG_RX,  27,  7 },   // PB11
+    { 3, UART_SIG_RX,  43,  7 },   // PC11
+    { 3, UART_SIG_RX,  57,  7 },   // PD9
     // USART3 CTS
     { 3, UART_SIG_CTS,  15,  4 },  // PA15
     { 3, UART_SIG_CTS,  29,  7 },  // PB13
@@ -74,11 +74,11 @@ static const uart_pin_af_t uart_pin_af_table[] = {
     { 3, UART_SIG_RTS,  30,  7 },  // PB14
     { 3, UART_SIG_RTS,  60,  7 },  // PD12
     // USART4 TX
-    { 4, UART_SIG_TX ,  38,  7 },  // PC6
-    { 4, UART_SIG_TX ,  84,  7 },  // PF4
+    { 4, UART_SIG_TX,  38,  7 },   // PC6
+    { 4, UART_SIG_TX,  84,  7 },   // PF4
     // USART4 RX
-    { 4, UART_SIG_RX ,  39,  7 },  // PC7
-    { 4, UART_SIG_RX ,  83,  7 },  // PF3
+    { 4, UART_SIG_RX,  39,  7 },   // PC7
+    { 4, UART_SIG_RX,  83,  7 },   // PF3
     // USART4 CTS
     { 4, UART_SIG_CTS,  65,  7 },  // PE1
     { 4, UART_SIG_CTS,  80,  7 },  // PF0
@@ -86,27 +86,27 @@ static const uart_pin_af_t uart_pin_af_table[] = {
     { 4, UART_SIG_RTS,  64,  7 },  // PE0
     { 4, UART_SIG_RTS,  82,  7 },  // PF2
     // USART5 TX
-    { 5, UART_SIG_TX ,  64,  4 },  // PE0
-    { 5, UART_SIG_TX ,  67, 11 },  // PE3
+    { 5, UART_SIG_TX,  64,  4 },   // PE0
+    { 5, UART_SIG_TX,  67, 11 },   // PE3
     // USART5 RX
-    { 5, UART_SIG_RX ,  66,  4 },  // PE2
-    { 5, UART_SIG_RX ,  85,  4 },  // PF5
+    { 5, UART_SIG_RX,  66,  4 },   // PE2
+    { 5, UART_SIG_RX,  85,  4 },   // PF5
     // USART5 CTS
     { 5, UART_SIG_CTS,  65,  4 },  // PE1
     // USART5 RTS
     { 5, UART_SIG_RTS,  55,  4 },  // PD7
     // USART6 TX
-    { 6, UART_SIG_TX ,   0,  8 },  // PA0
-    { 6, UART_SIG_TX ,  12,  6 },  // PA12
-    { 6, UART_SIG_TX ,  25,  8 },  // PB9
-    { 6, UART_SIG_TX ,  42,  8 },  // PC10
-    { 6, UART_SIG_TX ,  49,  8 },  // PD1
+    { 6, UART_SIG_TX,   0,  8 },   // PA0
+    { 6, UART_SIG_TX,  12,  6 },   // PA12
+    { 6, UART_SIG_TX,  25,  8 },   // PB9
+    { 6, UART_SIG_TX,  42,  8 },   // PC10
+    { 6, UART_SIG_TX,  49,  8 },   // PD1
     // USART6 RX
-    { 6, UART_SIG_RX ,   1,  8 },  // PA1
-    { 6, UART_SIG_RX ,  11,  6 },  // PA11
-    { 6, UART_SIG_RX ,  24,  8 },  // PB8
-    { 6, UART_SIG_RX ,  43,  8 },  // PC11
-    { 6, UART_SIG_RX ,  48,  8 },  // PD0
+    { 6, UART_SIG_RX,   1,  8 },   // PA1
+    { 6, UART_SIG_RX,  11,  6 },   // PA11
+    { 6, UART_SIG_RX,  24,  8 },   // PB8
+    { 6, UART_SIG_RX,  43,  8 },   // PC11
+    { 6, UART_SIG_RX,  48,  8 },   // PD0
     // USART6 CTS
     { 6, UART_SIG_CTS,  16,  8 },  // PB0
     { 6, UART_SIG_CTS,  31,  8 },  // PB15
@@ -114,27 +114,27 @@ static const uart_pin_af_t uart_pin_af_table[] = {
     { 6, UART_SIG_RTS,  15,  8 },  // PA15
     { 6, UART_SIG_RTS,  30,  8 },  // PB14
     // USART7 TX
-    { 7, UART_SIG_TX ,  22, 14 },  // PB6
-    { 7, UART_SIG_TX ,  29, 14 },  // PB13
-    { 7, UART_SIG_TX ,  44,  8 },  // PC12
+    { 7, UART_SIG_TX,  22, 14 },   // PB6
+    { 7, UART_SIG_TX,  29, 14 },   // PB13
+    { 7, UART_SIG_TX,  44,  8 },   // PC12
     // USART7 RX
-    { 7, UART_SIG_RX ,  21, 14 },  // PB5
-    { 7, UART_SIG_RX ,  28, 14 },  // PB12
-    { 7, UART_SIG_RX ,  50,  8 },  // PD2
+    { 7, UART_SIG_RX,  21, 14 },   // PB5
+    { 7, UART_SIG_RX,  28, 14 },   // PB12
+    { 7, UART_SIG_RX,  50,  8 },   // PD2
     // USART7 CTS
     { 7, UART_SIG_CTS,  41,  8 },  // PC9
     // USART7 RTS
     { 7, UART_SIG_RTS,  40,  8 },  // PC8
     // USART8 TX
-    { 8, UART_SIG_TX ,  15, 11 },  // PA15
-    { 8, UART_SIG_TX ,  20, 11 },  // PB4
-    { 8, UART_SIG_TX ,  72,  7 },  // PE8
-    { 8, UART_SIG_TX ,  87,  7 },  // PF7
+    { 8, UART_SIG_TX,  15, 11 },   // PA15
+    { 8, UART_SIG_TX,  20, 11 },   // PB4
+    { 8, UART_SIG_TX,  72,  7 },   // PE8
+    { 8, UART_SIG_TX,  87,  7 },   // PF7
     // USART8 RX
-    { 8, UART_SIG_RX ,   8, 11 },  // PA8
-    { 8, UART_SIG_RX ,  19, 11 },  // PB3
-    { 8, UART_SIG_RX ,  71,  7 },  // PE7
-    { 8, UART_SIG_RX ,  86,  7 },  // PF6
+    { 8, UART_SIG_RX,   8, 11 },   // PA8
+    { 8, UART_SIG_RX,  19, 11 },   // PB3
+    { 8, UART_SIG_RX,  71,  7 },   // PE7
+    { 8, UART_SIG_RX,  86,  7 },   // PF6
     // USART8 CTS
     { 8, UART_SIG_CTS,  89,  7 },  // PF9
     { 8, UART_SIG_CTS,  90, 11 },  // PF10
