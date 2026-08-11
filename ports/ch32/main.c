@@ -22,6 +22,12 @@
 #include "usbd.h"
 #include "machine_pin.h"
 #include "machine_dac.h"
+
+/* Defined in machine_uart.c, which extmod/machine_uart.c includes rather than
+ * compiling on its own, so there is no header to take this from. */
+#if MICROPY_PY_MACHINE_UART
+void machine_uart_deinit_all(void);
+#endif
 #include "machine_pwm.h"
 #include "machine_mem_backup.h"
 #include "machine_rtc.h"
@@ -180,6 +186,17 @@ int main(void) {
         /* Same for the analog outputs, which otherwise hold their last voltage
          * indefinitely. */
         machine_dac_deinit_all();
+
+        /* And the UARTs. Their objects live on the heap that is about to be
+         * reclaimed, but the table the receive interrupt finds them through is
+         * an ordinary static and survives, so without this a byte arriving
+         * after a soft reset would be pushed into a freed ring buffer -- and
+         * the next UART(id) would read its settings out of the same freed
+         * object. The upstream machine_uart_tx test caught exactly that, as a
+         * construction failing on parameters it had never been given. */
+        #if MICROPY_PY_MACHINE_UART
+        machine_uart_deinit_all();
+        #endif
 
         mp_printf(&mp_plat_print, "MPY: soft reboot\n");
         mp_deinit();

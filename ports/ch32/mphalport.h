@@ -82,4 +82,7 @@ extern uint32_t SystemCoreClock;
 
 void mp_hal_init(void);
 
+/* os.urandom(). Backed by the hardware TRNG in rng.c, whitened -- see there. */
+void mp_hal_get_random(size_t n, void *buf);
+
 #endif // MICROPY_INCLUDED_CH32_MPHALPORT_H

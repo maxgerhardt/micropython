@@ -17,6 +17,9 @@ timing_margin_us = 100
 # Tune test parameters based on the target.
 if "alif" in sys.platform:
     bit_margin = 1
+elif "ch32" in sys.platform:
+    initial_delay_ms = 20  # UART sends an idle frame when TE is enabled
+    bit_margin = 1
 elif "esp32" in sys.platform:
     timing_margin_us = 400
 elif "esp8266" in sys.platform:

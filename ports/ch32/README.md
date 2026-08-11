@@ -974,3 +974,35 @@ it, `rxbuf` must cover whatever can arrive before the application reads.
 
 `ports/ch32/test_uart.py` covers all of this; the loopback half needs
 PA2 wired to PA3 and skips itself with a message when the jumper is absent.
+
+## Random numbers
+
+    import os, random
+    os.urandom(16)          # every byte from the hardware TRNG
+    random.randint(1, 6)    # PRNG, seeded from the TRNG at import
+
+The `random` module is MicroPython's usual PRNG, but its seed comes from the
+hardware TRNG rather than a constant, so a board does **not** produce the same
+sequence after every reset. Verified across three consecutive reboots. Code
+wanting fresh entropy per call should use `os.urandom()`.
+
+### The raw RNG is not uniform, and is whitened
+
+Reading `RNG_DR` directly gives roughly **10 bits of entropy per 32-bit word**,
+not 32: about 1400 distinct values in 4000 reads, and 421 in 600. The unique
+count saturates rather than growing linearly, so it is a limited value pool
+rather than reading faster than the generator refreshes. Every bit position
+does vary; spacing the reads to 1 ms does not help; a one-second warm-up does
+not help; and it is the same on either clock source. The chip's own error flags
+stay clear throughout (`SR = 0x01`), so it does not consider anything wrong.
+
+That is ordinary for a raw noise source — it is why entropy sources are
+conditioned, and why the same peripheral works well behind mbedtls, whose pool
+hashes many polls together. `rng.c` conditions it explicitly: several raw words
+are folded into a persistent pool per output, through a splitmix64 finaliser.
+Measured after conditioning, **3000 of 3000** 32-bit draws are distinct and bit
+balance is 8197 of 16384. Throughput is about 4 KB/s.
+
+This is a whitened hardware entropy source, good for seeding and for
+`os.urandom()`. It is not claimed to be cryptographically strong — the raw
+measurements above are the reason to be careful about assuming otherwise.

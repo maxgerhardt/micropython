@@ -121,6 +121,27 @@
 #define MICROPY_PY_MACHINE_UART_SENDBREAK (1)
 #define MICROPY_PY_MACHINE_UART_READCHAR_WRITECHAR (1)
 
+/* random and os.urandom(), both backed by the hardware TRNG.
+ *
+ * The seed is the point. Without one, random.random() returns the identical
+ * sequence on every board from every reset, which is the classic embedded
+ * footgun; MICROPY_PY_RANDOM_SEED_INIT_FUNC takes 64 bits from the TRNG at
+ * import instead. random.* remains a PRNG after that -- code wanting fresh
+ * entropy per call should use os.urandom(), where every byte comes from the
+ * peripheral.
+ *
+ * Raw RNG words are NOT uniform on this part and are whitened in rng.c. Read
+ * the measurements there before relying on any of this for anything that
+ * matters. */
+#define MICROPY_PY_RANDOM               (1)
+#define MICROPY_PY_RANDOM_EXTRA_FUNCS   (1)
+#define MICROPY_PY_RANDOM_SEED_INIT_FUNC (ch32_rng_u64())
+#define MICROPY_PY_OS_URANDOM           (1)
+#ifndef __ASSEMBLER__
+#include <stdint.h>
+uint64_t ch32_rng_u64(void);
+#endif
+
 /* framebuf is what every display driver in micropython-lib builds on -- an
  * SSD1306 is unusable without it -- and it also lets the upstream suite run
  * its framebuf tests instead of skipping them. */
