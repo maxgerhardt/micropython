@@ -94,6 +94,13 @@ running core.
 
 `CH32H417QEU6_V5F` (default) — REPL on USART1, PA9 (TX) / PA10 (RX), 115200 8N1.
 
+`CH32H417QEU6_V3F` exists but is **not a supported target and is not built by
+CI**. The V3F's role here is the boot stub in `boot_v3f/`, which configures the
+clock tree and starts the V5F; that stub is a separate small program and is
+what `firmware.bin` contains. The full V3F image was how the port was
+bootstrapped before the V5F ran, and is kept only for the eventual multi-core
+work — see the note at the top of its `mpconfigboard.mk`.
+
 ## GPIO
 
     from machine import Pin

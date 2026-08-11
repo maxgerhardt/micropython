@@ -610,8 +610,11 @@ function ci_ch32_wch_build {
     # firmware.bin is the deliverable: this chip's OpenOCD driver mass-erases on
     # every program command, so the V3F stub and the V5F image have to be
     # written as one object.
+    #
+    # Only the V5F board is built. The V3F is not a supported target -- its
+    # role is the boot stub in ports/ch32/boot_v3f, which firmware.bin already
+    # contains and which is built as part of it. See boards/CH32H417QEU6_V3F.
     make ${MAKEOPTS} -C ports/ch32 BOARD=CH32H417QEU6_V5F CROSS_COMPILE=riscv-wch-elf- firmware.bin
-    make ${MAKEOPTS} -C ports/ch32 BOARD=CH32H417QEU6_V3F CROSS_COMPILE=riscv-wch-elf-
     ci_ch32_size_report riscv-wch-elf-size
 }
 
@@ -623,7 +626,6 @@ function ci_ch32_generic_build {
     make ${MAKEOPTS} -C mpy-cross
     make ${MAKEOPTS} -C ports/ch32 submodules
     make ${MAKEOPTS} -C ports/ch32 BOARD=CH32H417QEU6_V5F CH32_TOOLCHAIN=generic CROSS_COMPILE=riscv-none-elf-
-    make ${MAKEOPTS} -C ports/ch32 BOARD=CH32H417QEU6_V3F CH32_TOOLCHAIN=generic CROSS_COMPILE=riscv-none-elf-
     ci_ch32_size_report riscv-none-elf-size
 }
 
