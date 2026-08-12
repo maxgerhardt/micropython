@@ -1,6 +1,32 @@
 /* The `ch32` module: board-specific objects that do not belong in `machine`. */
 #include "py/runtime.h"
 #include "flash.h"
+#include "machine_wdt.h"
+#include "mphalport.h"
+
+/* Raw RCC_RSTSCKR from boot. machine.reset_cause() collapses causes that this
+ * keeps separate -- notably pin reset, which the V5F's always-set software
+ * reset flag would otherwise hide. */
+static mp_obj_t ch32_reset_flags(void) {
+    return mp_obj_new_int_from_uint(machine_wdt_reset_flags());
+}
+static MP_DEFINE_CONST_FUN_OBJ_0(ch32_reset_flags_obj, ch32_reset_flags);
+
+/* (bytes of stack used at the deepest point since boot, bytes available).
+ *
+ * Worth checking after anything that recurses deeply -- lwip's receive path
+ * inside a blocking socket call is the current record holder. The stack grows
+ * down into the GC heap, so exceeding it corrupts objects rather than raising. */
+static mp_obj_t ch32_stack_usage_py(void) {
+    uint32_t used, total;
+    ch32_stack_usage(&used, &total);
+    mp_obj_t t[2] = {
+        mp_obj_new_int_from_uint(used),
+        mp_obj_new_int_from_uint(total),
+    };
+    return mp_obj_new_tuple(2, t);
+}
+static MP_DEFINE_CONST_FUN_OBJ_0(ch32_stack_usage_obj, ch32_stack_usage_py);
 
 #if MICROPY_PY_FRAMEBUF_ACCEL
 #include "framebuf_accel.h"
@@ -32,6 +58,54 @@ static mp_obj_t ch32_gpha_ops(void) {
 static MP_DEFINE_CONST_FUN_OBJ_0(ch32_gpha_ops_obj, ch32_gpha_ops);
 #endif
 
+#if MICROPY_PY_NETWORK_LAN
+#include "eth.h"
+
+/* Ethernet bring-up and traffic counters in one tuple.
+ *
+ * This exists because "the link is down" has at least six distinct causes on
+ * this part -- PLL off, MAC clock off, PHY still in reset or powered down, SMI
+ * not answering, auto-negotiation unfinished, or no cable -- and they are
+ * indistinguishable from Python without it. */
+static mp_obj_t ch32_eth_diag(void) {
+    eth_diag_t d;
+    eth_get_diag(&d);
+    const eth_stats_t *s = eth_get_stats(&eth_instance);
+
+    mp_obj_t regs[14] = {
+        mp_obj_new_int_from_uint(d.rcc_ctlr),
+        mp_obj_new_int_from_uint(d.hbpcenr),
+        mp_obj_new_int_from_uint(d.macphycr),
+        mp_obj_new_int_from_uint(d.maccr),
+        mp_obj_new_int_from_uint(d.dmasr),
+        mp_obj_new_int_from_uint(d.dmaomr),
+        mp_obj_new_int_from_uint(d.phy_id1),
+        mp_obj_new_int_from_uint(d.phy_id2),
+        mp_obj_new_int_from_uint(d.phy_bcr),
+        mp_obj_new_int_from_uint(d.phy_bsr),
+        mp_obj_new_int_from_uint(d.phy_anlpar),
+        mp_obj_new_int_from_uint(d.phy_status),
+        mp_obj_new_int_from_uint(d.lock_depth),
+        mp_obj_new_int_from_uint(d.irq_enabled),
+    };
+    mp_obj_t stats[6] = {
+        mp_obj_new_int_from_uint(s->rx_frames),
+        mp_obj_new_int_from_uint(s->tx_frames),
+        mp_obj_new_int_from_uint(s->rx_dropped),
+        mp_obj_new_int_from_uint(s->rx_buf_unavail),
+        mp_obj_new_int_from_uint(s->tx_errors),
+        mp_obj_new_int_from_uint(s->link_changes),
+    };
+
+    mp_obj_t pair[2] = {
+        mp_obj_new_tuple(14, regs),
+        mp_obj_new_tuple(6, stats),
+    };
+    return mp_obj_new_tuple(2, pair);
+}
+static MP_DEFINE_CONST_FUN_OBJ_0(ch32_eth_diag_obj, ch32_eth_diag);
+#endif
+
 #if MICROPY_HW_ENABLE_USBDEV
 #include "tusb.h"
 extern volatile uint32_t ch32_usbd_task_count;
@@ -55,10 +129,15 @@ static MP_DEFINE_CONST_FUN_OBJ_0(ch32_usb_stat_obj, ch32_usb_stat);
 static const mp_rom_map_elem_t ch32_module_globals_table[] = {
     { MP_ROM_QSTR(MP_QSTR___name__), MP_ROM_QSTR(MP_QSTR_ch32) },
     { MP_ROM_QSTR(MP_QSTR_Flash),    MP_ROM_PTR(&ch32_flash_type) },
+    { MP_ROM_QSTR(MP_QSTR_stack_usage), MP_ROM_PTR(&ch32_stack_usage_obj) },
+    { MP_ROM_QSTR(MP_QSTR_reset_flags), MP_ROM_PTR(&ch32_reset_flags_obj) },
     #if MICROPY_PY_FRAMEBUF_ACCEL
     { MP_ROM_QSTR(MP_QSTR_framebuf_accel), MP_ROM_PTR(&ch32_framebuf_accel_obj) },
     { MP_ROM_QSTR(MP_QSTR_gpha_available), MP_ROM_PTR(&ch32_gpha_available_obj) },
     { MP_ROM_QSTR(MP_QSTR_gpha_ops), MP_ROM_PTR(&ch32_gpha_ops_obj) },
+    #endif
+    #if MICROPY_PY_NETWORK_LAN
+    { MP_ROM_QSTR(MP_QSTR_eth_diag), MP_ROM_PTR(&ch32_eth_diag_obj) },
     #endif
     #if MICROPY_HW_ENABLE_USBDEV
     { MP_ROM_QSTR(MP_QSTR_usb_stat), MP_ROM_PTR(&ch32_usb_stat_obj) },

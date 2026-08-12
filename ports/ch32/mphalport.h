@@ -85,4 +85,10 @@ void mp_hal_init(void);
 /* os.urandom(). Backed by the hardware TRNG in rng.c, whitened -- see there. */
 void mp_hal_get_random(size_t n, void *buf);
 
+/* Stack high-water instrumentation, behind ch32.stack_usage(). The stack grows
+ * down into the GC heap with no guard between them, so knowing how close it
+ * has come is the only warning available. */
+void ch32_stack_paint(void);
+void ch32_stack_usage(uint32_t *used, uint32_t *total);
+
 #endif // MICROPY_INCLUDED_CH32_MPHALPORT_H

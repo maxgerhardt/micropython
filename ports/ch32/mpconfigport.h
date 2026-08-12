@@ -185,16 +185,42 @@ uint64_t ch32_rng_u64(void);
 #define MICROPY_HW_USB_MANUFACTURER_STRING "WCH"
 #define MICROPY_HW_USB_PRODUCT_FS_STRING   "CH32H417 MicroPython"
 
-/* The USB stack has to be serviced from two places, and both are needed.
+// Networking: lwip on the on-chip Ethernet MAC and 100M PHY.
+#define MICROPY_PY_NETWORK              (1)
+#define MICROPY_PY_NETWORK_LAN          (1)
+#define MICROPY_PY_SOCKET               (1)
+/* extmod.mk already puts -DMICROPY_PY_LWIP=1 on the command line in response
+ * to MICROPY_PY_LWIP=1 in the Makefile; this is only the fallback for a
+ * translation unit that does not get CFLAGS_EXTMOD. */
+#ifndef MICROPY_PY_LWIP
+#define MICROPY_PY_LWIP                 (1)
+#endif
+#define MICROPY_PY_NETWORK_HOSTNAME_DEFAULT "mpy-ch32"
+#define MICROPY_PORT_NETWORK_INTERFACES \
+    { MP_ROM_QSTR(MP_QSTR_LAN), MP_ROM_PTR(&network_lan_type) },
+extern const struct _mp_obj_type_t network_lan_type;
+
+/* MICROPY_PY_LWIP_ENTER/EXIT are deliberately left at their empty defaults.
+ *
+ * Wrapping modlwip.c's socket calls in an interrupt mask looks like the right
+ * thing and is a trap: those regions can raise -- mp_raise_OSError on a
+ * timeout, for one -- and an exception unwinding past the EXIT leaves the
+ * Ethernet interrupt masked forever, which kills the interface for good. No
+ * upstream port defines these; stm32 and mimxrt both call netif->input
+ * straight from the ETH ISR and rely on lwip's own SYS_ARCH_PROTECT. This
+ * port follows them. What it does protect is sys_check_timeouts(), in
+ * mpnetworkport.c, where the region is short and contains no raise. */
+
+/* Background work has to be serviced from two places, and both are needed.
  *
  * MICROPY_INTERNAL_EVENT_HOOK runs from mp_event_handle_nowait(), which is what
  * the REPL spins on while waiting for input -- without it, a board sitting at
- * the prompt never processes USB at all.
+ * the prompt never processes USB or lwip timers at all.
  *
  * The VM hooks cover the other case: a long-running Python loop never reaches
  * the event hook, and the host would eventually drop the connection. */
-void mp_hal_ch32_poll_usb(void);
-#define MICROPY_INTERNAL_EVENT_HOOK mp_hal_ch32_poll_usb()
+void mp_hal_ch32_poll(void);
+#define MICROPY_INTERNAL_EVENT_HOOK mp_hal_ch32_poll()
 
 /* Idle by gating the core clock rather than spinning. Without this the core
  * runs flat out whenever the REPL is waiting for a character, which is most of
@@ -211,7 +237,7 @@ void mp_hal_ch32_wfe(void);
  * benefit. 256 keeps the host happy and the overhead unmeasurable. */
 #define MICROPY_VM_HOOK_COUNT (256)
 #define MICROPY_VM_HOOK_INIT static uint vm_hook_divisor = MICROPY_VM_HOOK_COUNT;
-#define MICROPY_VM_HOOK_POLL if (--vm_hook_divisor == 0) {         vm_hook_divisor = MICROPY_VM_HOOK_COUNT;                   mp_hal_ch32_poll_usb();                                }
+#define MICROPY_VM_HOOK_POLL if (--vm_hook_divisor == 0) {         vm_hook_divisor = MICROPY_VM_HOOK_COUNT;                   mp_hal_ch32_poll();                                    }
 #define MICROPY_VM_HOOK_LOOP MICROPY_VM_HOOK_POLL
 #define MICROPY_VM_HOOK_RETURN MICROPY_VM_HOOK_POLL
 

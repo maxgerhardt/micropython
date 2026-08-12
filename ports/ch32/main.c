@@ -14,6 +14,15 @@
 #include "extmod/vfs.h"
 #include "extmod/vfs_fat.h"
 
+#if MICROPY_PY_NETWORK
+#include "extmod/modnetwork.h"
+#endif
+#if MICROPY_PY_LWIP
+#include "lwip/apps/mdns.h"
+#include "lwip/init.h"
+#include "lwip/timeouts.h"
+#endif
+
 #include "shared/runtime/gchelper.h"
 #include "shared/runtime/pyexec.h"
 
@@ -134,9 +143,37 @@ int main(void) {
     ch32_mem_backup_init();
     ch32_usbd_init();
 
-    // Leave a margin below the true stack top for the C stack itself.
+    #if MICROPY_PY_LWIP
+    /* Once, outside the soft-reset loop. lwip cannot be reinitialised by
+     * calling this again: its timeout list is static and only a real reset
+     * clears it, so a second call leaks every pending timer.
+     *
+     * It must happen before any netif exists. Without it the memp pools are
+     * never built, pbuf_alloc() returns NULL for every frame, and the
+     * interface comes up, negotiates, reports link -- and silently drops
+     * 100% of traffic. */
+    lwip_init();
+    #if LWIP_MDNS_RESPONDER
+    mdns_resp_init();
+    #endif
+    #endif
+
+    /* Fill the unused stack with a known pattern so ch32.stack_usage() can
+     * find the high-water mark later. Painting stops well below the current
+     * stack pointer, so it cannot scribble on the frame doing the painting.
+     *
+     * This is not diagnostics for its own sake: the stack is immediately
+     * below nothing -- it grows down towards the heap -- so an overflow
+     * corrupts the GC heap silently instead of trapping. Being able to ask how
+     * close it came is the only cheap defence. */
+    ch32_stack_paint();
+
+    /* Leave a margin below the true stack top for the C stack itself. The
+     * limit is what the VM checks against; the gap between it and the real
+     * 32K is what C call chains MicroPython cannot see -- lwip's receive path
+     * above all -- get to use. */
     mp_stack_set_top((void *)&_eusrstack);
-    mp_stack_set_limit(12 * 1024);
+    mp_stack_set_limit(24 * 1024);
 
     size_t heap_size = (size_t)(&_heap_end - &_heap_start);
 
@@ -146,6 +183,12 @@ int main(void) {
         gc_init(&_heap_start, &_heap_end);
         mp_init();
         init_filesystem();
+
+        /* Inside the loop, unlike lwip_init(): this rebuilds the NIC list,
+         * which lives in a root pointer that mp_init() has just cleared. */
+        #if MICROPY_PY_NETWORK
+        mod_network_init();
+        #endif
 
         mp_printf(&mp_plat_print, "MicroPython on %s\n", MICROPY_HW_BOARD_NAME);
         mp_printf(&mp_plat_print, "heap: %u bytes\n", (unsigned)heap_size);
@@ -196,6 +239,15 @@ int main(void) {
          * construction failing on parameters it had never been given. */
         #if MICROPY_PY_MACHINE_UART
         machine_uart_deinit_all();
+        #endif
+
+        /* The netif deliberately stays up across a soft reset, so an Ethernet
+         * link and its DHCP lease survive Ctrl-D rather than having to be
+         * renegotiated. That is safe only because every buffer the receive
+         * interrupt touches -- descriptors, MAC buffers, lwip's pools -- is
+         * static, so none of it is on the heap being reclaimed here. */
+        #if MICROPY_PY_NETWORK
+        mod_network_deinit();
         #endif
 
         mp_printf(&mp_plat_print, "MPY: soft reboot\n");

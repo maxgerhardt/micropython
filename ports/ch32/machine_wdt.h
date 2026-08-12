@@ -32,4 +32,8 @@ bool machine_wdt_is_running(void);
 
 mp_int_t machine_wdt_reset_cause(void);
 
+/* Raw RCC_RSTSCKR as it stood at boot, before the flags were cleared. Exposed
+ * because the cooked cause above collapses several distinct causes into SOFT. */
+uint32_t machine_wdt_reset_flags(void);
+
 #endif // MICROPY_INCLUDED_CH32_MACHINE_WDT_H

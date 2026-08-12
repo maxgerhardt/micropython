@@ -580,7 +580,9 @@ instruction placement dominates performance.
     FLASH     0x00000000   64K   V3F boot stub
     FLASH     0x00010000  896K   V5F image
     ITCM      0x200A0000  128K   .itcm_text: all of py/ + shared/runtime/ (96K used)
-    RAM_CODE  0x20100000  256K   .highcode: extmod, oofatfs, SDK drivers, port files (64K used)
+    RAM_CODE  0x20100000  240K   .highcode: extmod, oofatfs, SDK drivers, port files (64K used)
+    USB_RAM   0x2013C000   16K   .usbram: TinyUSB state (the USB DMA cannot reach DTCM)
+    ETH_RAM   0x20140000   32K   .ethram: MAC descriptors and frame buffers (same reason)
     DTCM      0x200C0000  256K   .data/.bss/stack/GC heap
 
 `main()` copies `.itcm_text` into ITCM before calling into it; the SDK startup
@@ -1013,3 +1015,103 @@ balance is 8197 of 16384. Throughput is about 4 KB/s.
 This is a whitened hardware entropy source, good for seeding and for
 `os.urandom()`. It is not claimed to be cryptographically strong — the raw
 measurements above are the reason to be careful about assuming otherwise.
+
+## Ethernet
+
+`network.LAN` on the on-chip 100M PHY, over MicroPython's own lwip. The
+vendor's `libwchnet.a` is not used: it is lwip with WCH's socket API bolted on,
+and this port already has lwip and `extmod/modlwip.c`. Only the hardware
+knowledge was taken from `EVT/EXAM/ETH/NetLib/eth_driver_100M.c`.
+
+```python
+import network
+lan = network.LAN()          # no phy_addr/phy_type: the PHY is on the die
+lan.active(True)             # DHCP starts when the link comes up
+lan.isconnected()
+lan.ipconfig('addr4')
+lan.config('mac')            # factory address from 0x1FFFF7E8, per-die
+```
+
+The MAC is a Synopsys DWMAC — the same IP as STM32F4/F7 — so `ports/stm32/eth.c`
+is a structural template. What differs is CH32-specific and all of it is
+load-bearing:
+
+| Item | Detail |
+|---|---|
+| ETH_PLL | `RCC_CTLR` bit 26 on, bit 27 ready. Nothing works without it. |
+| MAC clock | `RCC_HBPCENR` bit 14 |
+| On-chip PHY | `MACPHYCR` bit 30 powers it up, bit 31 releases reset. Both needed before SMI answers. |
+| Analog trim | Four writes to `0x4002A00C` on every link-up. Undocumented; copied verbatim from WCH. |
+| Link interrupt | `DMASR` has an extra `PHYSR` source, so link changes interrupt rather than needing an MDIO poll |
+| MDI pins | Hardwired to the jack. RM table 31-1: "No IO configuration required". |
+| LEDs | PF0 green/link, PF2 yellow/activity, both AF10, driven by the PHY itself |
+
+Frames are copied between the DMA buffers and pbufs rather than passed by
+reference. The buffers must live in `ETH_RAM` because the Ethernet DMA cannot
+reach DTCM — the same constraint that created `USB_RAM` — while pbufs belong in
+the fast DTCM heap. The copy costs about 5% of one direction (memcpy measured
+at 259 MB/s against 12.5 MB/s of wire), which is the cheaper half of the trade.
+
+### Received frames are not processed in the interrupt
+
+The ETH handler sets two flags and returns; `eth_rx_process()` and `eth_poll()`
+do the work from the background hook. `netif->input()` runs lwip's whole
+receive path, and executing that on the interrupt stack — on top of whatever
+depth the interrupted Python code had reached — wedged the board under load.
+`ports/stm32` does call input from its ISR; this port has a 16→32K stack shared
+with the VM and no separate interrupt stack, so it does not.
+
+For the same reason `MICROPY_PY_LWIP_ENTER` is left undefined. Wrapping
+`modlwip.c`'s socket calls in an interrupt mask looks right and is a trap:
+those regions raise, and an exception unwinding past the matching EXIT would
+leave the Ethernet interrupt masked permanently.
+
+### Measured
+
+Board → host, 1 MB over TCP, timed by the host clock: **4.9 Mbit/s** (1.70 s).
+Both `eth_rx_process()` and `mp_network_lwip_poll()` carry recursion guards;
+they are reached from the VM hook, which lwip can re-enter.
+
+### Known defect: bulk inbound transfer resets the board
+
+A sustained TCP **download** (host → board) resets the board, reproducibly,
+within the first couple of kilobytes. Everything else works: DHCP, DNS, ARP,
+ping, a TCP echo round trip, and a 1 MB upload.
+
+What is established, so the next attempt does not re-cover it:
+
+- It is **not** a CPU fault. The handler prints and resets; a deliberate fault
+  (`machine.mem32[0xFFFFFFFC]`) still reports `HARDFAULT` normally. The
+  Ethernet reset is silent.
+- It is **not** the watchdog (checked first, would report `WDT_RESET`) and not
+  a power-on/brownout (`PORRST` is not set). The raw `RCC_RSTSCKR` is
+  `0x10000000` — SFTRST only — which is what *every* V5F boot shows, because
+  the V3F stub wakes this core with a software reset. So the flags cannot
+  distinguish the cause and are a dead end.
+- It is **not** rate-dependent: throttling the sender to well under line rate
+  fails at the same point.
+- It is **not** stack depth: it reproduces with a 32K stack, and
+  `ch32.stack_usage()` reports a 1680-byte high-water mark.
+- It is **not** pbuf chaining: `PBUF_POOL_BUFSIZE` sized to hold a whole frame
+  changes nothing.
+- It is **not** the recursion hazards described above; guarding both left it
+  unchanged. Those guards are correct and stay.
+
+The distinguishing factor is frame size — every path that works exchanges small
+frames, and the board has never successfully received a full 1514-byte one.
+That is where to look next.
+
+`ports/ch32/test_eth.py` (26 checks) deliberately does not drive a bulk
+download, so a test run does not reboot the board.
+
+### Diagnostics
+
+`ch32.eth_diag()` returns `(registers, counters)` — clocks, `MACPHYCR`, `DMASR`
+and the PHY's ID/BCR/BSR/ANLPAR/status, then frames in and out, drops, receive
+buffer unavailable, transmit errors and link changes. It exists because "the
+link is down" has at least six distinct causes here and they are otherwise
+indistinguishable from Python.
+
+`ch32.stack_usage()` returns `(peak_bytes_used, total)`. The stack grows down
+into the GC heap with no guard between them, so an overflow corrupts objects
+instead of trapping; this is the only warning available.

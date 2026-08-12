@@ -20,6 +20,10 @@ ringbuf_t stdin_ringbuf = { stdin_ringbuf_array, sizeof(stdin_ringbuf_array) };
 #include "usbd.h"
 #endif
 
+#if MICROPY_PY_LWIP
+#include "mpnetworkport.h"
+#endif
+
 /* SysTick0 is the V3F core's counter (SysTick1 belongs to the V5F).
  * STK_CTLR_0 bits, per reference manual 4.6.1.1:
  *   0 EN_0           enable
@@ -249,13 +253,61 @@ void mp_hal_quiet_timing_exit(uint32_t state) {
     mp_hal_atomic_exit(state);
 }
 
-#if MICROPY_HW_ENABLE_USBDEV
-/* Pumped from the VM hook so the stack keeps running during a long-lived
- * Python loop; without it the host eventually drops the connection. */
-void mp_hal_ch32_poll_usb(void) {
-    ch32_usbd_task();
+/* Stack instrumentation.
+ *
+ * The stack occupies the top of DTCM and grows DOWN towards the GC heap, with
+ * nothing between them: an overflow does not trap, it quietly rewrites heap
+ * objects and the failure surfaces later as something unrelated. Painting the
+ * unused region at boot and scanning it afterwards is what turns "the board
+ * reset and said nothing" into a number.
+ *
+ * The pattern is checked one word at a time from the bottom of the stack up;
+ * the first word that no longer matches is as deep as anything has ever gone.
+ */
+#define STACK_PAINT_WORD (0xa5a5a5a5u)
+
+extern uint8_t _susrstack, _eusrstack;
+
+void ch32_stack_paint(void) {
+    uint32_t *bottom = (uint32_t *)&_susrstack;
+    uint32_t *sp;
+    __asm volatile ("mv %0, sp" : "=r" (sp));
+
+    /* Stop a long way below the current frame. Painting up to sp would
+     * overwrite this function's own return address. */
+    uint32_t *top = sp - 64;
+    for (uint32_t *p = bottom; p < top; p++) {
+        *p = STACK_PAINT_WORD;
+    }
 }
-#endif
+
+// (bytes used at peak, bytes total)
+void ch32_stack_usage(uint32_t *used, uint32_t *total) {
+    uint32_t *bottom = (uint32_t *)&_susrstack;
+    uint32_t *top = (uint32_t *)&_eusrstack;
+
+    uint32_t *p = bottom;
+    while (p < top && *p == STACK_PAINT_WORD) {
+        p++;
+    }
+
+    *total = (uint32_t)((uint8_t *)top - (uint8_t *)bottom);
+    *used = (uint32_t)((uint8_t *)top - (uint8_t *)p);
+}
+
+/* Background work that has to keep happening while Python runs.
+ *
+ * Pumped from the VM hook so both stacks keep running during a long-lived
+ * Python loop: without it the USB host eventually drops the connection, and
+ * lwip stops retransmitting and renewing its DHCP lease. */
+void mp_hal_ch32_poll(void) {
+    #if MICROPY_HW_ENABLE_USBDEV
+    ch32_usbd_task();
+    #endif
+    #if MICROPY_PY_LWIP
+    mp_network_lwip_poll();
+    #endif
+}
 
 uintptr_t mp_hal_stdio_poll(uintptr_t poll_flags) {
     uintptr_t ret = 0;

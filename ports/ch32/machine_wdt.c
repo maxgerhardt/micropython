@@ -174,8 +174,17 @@ MP_DEFINE_CONST_OBJ_TYPE(
  * and accumulate until cleared, so reading them later would report every
  * reason since power-on rather than the most recent one. */
 static uint8_t machine_wdt_reset_cause_value;
+static uint32_t machine_wdt_reset_flags_raw;
+
+/* The cooked reset_cause() cannot tell every cause apart -- the V5F boots with
+ * SFTRST already set, so SOFT is what most boots report regardless. This keeps
+ * the raw register for when that distinction matters. */
+uint32_t machine_wdt_reset_flags(void) {
+    return machine_wdt_reset_flags_raw;
+}
 
 void machine_wdt_reset_cause_init(void) {
+    machine_wdt_reset_flags_raw = RCC->RSTSCKR;
     /* Checked first because deepsleep is *implemented* as a software reset, so
      * SFTRST is set too and would otherwise mask it. The flag it reads lives
      * in RAM that survives a reset but not a power cycle, which is what makes

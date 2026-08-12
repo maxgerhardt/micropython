@@ -27,6 +27,13 @@ FROZEN_MANIFEST ?= boards/manifest.py
 # into SRC_QSTR, and the qstr preprocessor pass chokes on ff.c's token pasting.
 MICROPY_VFS_FAT = 1
 
+# Networking. Also before extmod.mk, which adds lib/lwip to GIT_SUBMODULES and
+# the lwip sources to SRC_THIRDPARTY_C when it sees this. The include path has
+# to come with it: extmod.mk adds lwip's own headers but expects the port to
+# supply lwipopts.h.
+MICROPY_PY_LWIP = 1
+INC += -I$(BOARD_DIR) -Ilwip_inc
+
 include $(TOP)/py/py.mk
 include $(TOP)/extmod/extmod.mk
 
@@ -133,6 +140,9 @@ SRC_C += \
 	machine_sleep.c \
 	rng.c \
 	gpha.c \
+	eth.c \
+	network_lan.c \
+	mpnetworkport.c \
 	framebuf_accel.c \
 	system_ch32h417_$(CH32_CORE).c \
 	machine_wdt.c \

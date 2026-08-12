@@ -1,6 +1,16 @@
 ENTRY( _start )
 
-__stack_size = 16384;
+/* 32K, raised from 16K when Ethernet arrived.
+ *
+ * lwip's receive path is a deep C call chain -- ethernet_input, ip4_input,
+ * tcp_input, the socket callback -- and it runs on top of whatever depth the
+ * Python code that pumped it had already reached, which for a blocking
+ * socket.recv() is considerable. At 16K a sustained TCP download overran the
+ * stack into the heap below it and the board reset without even managing a
+ * fault message, because the fault handler had no stack left either.
+ *
+ * ch32.stack_usage() reports the high-water mark; see modch32.c. */
+__stack_size = 32768;
 
 PROVIDE( _stack_size = __stack_size );
 
@@ -15,6 +25,11 @@ MEMORY
 	/* USBFS DMA cannot reach DTCM, so endpoint buffers live here, in
 	   the shared region on the system bus. */
 	USB_RAM (xrw)  : ORIGIN = 0x2013C000, LENGTH = 16K
+	/* Same reason as USB_RAM: the Ethernet DMA is on the system bus and cannot
+	   reach DTCM either. Descriptors and MAC frame buffers live here. Carved
+	   from the 256K at 0x20140000 that nothing else claims; the remaining 224K
+	   is still free. */
+	ETH_RAM (xrw)  : ORIGIN = 0x20140000, LENGTH = 32K
 	/* DTCM: zero-wait at the V5F core clock. Holds .data/.bss/stack/heap. */
 	RAM_LOAD (xrw) : ORIGIN = 0x200C0000, LENGTH = 256
 	RAM (xrw)      : ORIGIN = (0x200C0000+256), LENGTH = (256K-256)
@@ -186,6 +201,19 @@ SECTIONS
 		. = ALIGN(8);
 		PROVIDE( _eusbram = . );
 	} >USB_RAM
+
+	/* Ethernet descriptors and frame buffers, for the same reason .usbram
+	 * exists. Also outside .bss, so eth_init() zeroes it explicitly using
+	 * these symbols -- the startup code's _sbss.._ebss clear does not reach
+	 * here. Descriptors need 32-byte alignment; the DMA reads them as bursts. */
+	.ethram (NOLOAD) :
+	{
+		. = ALIGN(32);
+		PROVIDE( _sethram = . );
+		*(.ethram .ethram.*)
+		. = ALIGN(32);
+		PROVIDE( _eethram = . );
+	} >ETH_RAM
 
 	.dalign :
 	{
