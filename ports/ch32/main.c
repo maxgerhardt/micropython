@@ -182,6 +182,13 @@ int main(void) {
     for (;;) {
         gc_init(&_heap_start, &_heap_end);
         mp_init();
+
+        /* mp_init() leaves sys.path as ['', '.frozen'], which does not include
+         * /lib -- so `mpremote mip install` wrote packages to a directory
+         * nothing would ever import from, and the installed module was simply
+         * invisible. Every other port appends this; see ports/rp2/main.c. */
+        mp_obj_list_append(mp_sys_path, MP_OBJ_NEW_QSTR(MP_QSTR__slash_lib));
+
         init_filesystem();
 
         /* Inside the loop, unlike lwip_init(): this rebuilds the NIC list,
