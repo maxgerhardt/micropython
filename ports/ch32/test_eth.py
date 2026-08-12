@@ -4,9 +4,8 @@
 # server. Checks that do not need the network run regardless, so the file is
 # still useful on an unplugged board.
 #
-# Deliberately does NOT drive a bulk inbound transfer: that resets the board,
-# see the "Known defect" note in README.md. Adding it here would turn a test
-# run into a reboot.
+# Needs the board on USB-C power. A WCH-LinkE's 3V3 cannot run the PHY under
+# load and browns out during an inbound transfer -- see README.md.
 import time
 
 import ch32

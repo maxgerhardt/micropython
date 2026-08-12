@@ -1068,41 +1068,44 @@ leave the Ethernet interrupt masked permanently.
 
 ### Measured
 
-Board → host, 1 MB over TCP, timed by the host clock: **4.9 Mbit/s** (1.70 s).
-Both `eth_rx_process()` and `mp_network_lwip_poll()` carry recursion guards;
-they are reached from the VM hook, which lwip can re-enter.
+1 MB over TCP each way, timed by the host clock, with the board on USB-C power:
 
-### Known defect: bulk inbound transfer resets the board
+| Direction | Rate | Time |
+|---|---|---|
+| Board → host | 4.8 Mbit/s | 1.74 s |
+| Host → board | 4.2 Mbit/s | 2.02 s |
 
-A sustained TCP **download** (host → board) resets the board, reproducibly,
-within the first couple of kilobytes. Everything else works: DHCP, DNS, ARP,
-ping, a TCP echo round trip, and a 1 MB upload.
+`drop=0 rbu=0 txerr=0` over 1090 frames in and 1343 out, and
+`ch32.stack_usage()` stays at 1680 bytes throughout. Both `eth_rx_process()`
+and `mp_network_lwip_poll()` carry recursion guards; they are reached from the
+VM hook, which lwip can re-enter.
 
-What is established, so the next attempt does not re-cover it:
+### Power the board properly, or inbound transfers will reset it
 
-- It is **not** a CPU fault. The handler prints and resets; a deliberate fault
-  (`machine.mem32[0xFFFFFFFC]`) still reports `HARDFAULT` normally. The
-  Ethernet reset is silent.
-- It is **not** the watchdog (checked first, would report `WDT_RESET`) and not
-  a power-on/brownout (`PORRST` is not set). The raw `RCC_RSTSCKR` is
-  `0x10000000` — SFTRST only — which is what *every* V5F boot shows, because
-  the V3F stub wakes this core with a software reset. So the flags cannot
-  distinguish the cause and are a dead end.
-- It is **not** rate-dependent: throttling the sender to well under line rate
-  fails at the same point.
-- It is **not** stack depth: it reproduces with a 32K stack, and
-  `ch32.stack_usage()` reports a 1680-byte high-water mark.
-- It is **not** pbuf chaining: `PBUF_POOL_BUFSIZE` sized to hold a whole frame
-  changes nothing.
-- It is **not** the recursion hazards described above; guarding both left it
-  unchanged. Those guards are correct and stay.
+**A WCH-LinkE's 3V3 output cannot run this board with the Ethernet PHY under
+load.** A sustained inbound TCP transfer browns it out within a couple of
+kilobytes. Power from USB-C.
 
-The distinguishing factor is frame size — every path that works exchanges small
-frames, and the board has never successfully received a full 1514-byte one.
-That is where to look next.
+This is worth stating plainly because the failure does not look like a power
+problem:
 
-`ports/ch32/test_eth.py` (26 checks) deliberately does not drive a bulk
-download, so a test run does not reboot the board.
+- The reset is **silent**. It is not a CPU fault, so nothing is printed — the
+  fault handler works fine and still reports `HARDFAULT` for a deliberate
+  `machine.mem32[0xFFFFFFFC]`.
+- `PORRST` is **not** set, so it does not look like a brownout either. On a
+  board whose NRST is wired to the debug probe, the sag pulls the reset pin
+  before it trips the power-on detector, so the chip reports a *pin* reset.
+- And until this was found, `machine.reset_cause()` could not report a pin
+  reset at all: SFTRST is set on every V5F boot by the stub's wake, and it was
+  tested ahead of PINRST. Fixed — `PINRST` is now checked first, so this
+  failure mode announces itself as `HARD_RESET`.
+
+Ruled out along the way, all with the under-powered board, none of them the
+cause: transfer rate (throttling well below line rate failed identically),
+stack depth (reproduced with a 32K stack against a 1680-byte high-water mark),
+pbuf chaining (`PBUF_POOL_BUFSIZE` sized for a whole frame changed nothing),
+and re-entrancy of the receive path. The recursion guards that came out of that
+are correct on their own merits and stay.
 
 ### Diagnostics
 

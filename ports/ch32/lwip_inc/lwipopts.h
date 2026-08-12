@@ -32,9 +32,8 @@
  * header still attached, and lwip's default sizes this from TCP_MSS plus the
  * IP/TCP headers without accounting for that.
  *
- * Set explicitly rather than left to the default, but note this did NOT fix
- * the bulk-inbound reset described in ports/ch32/README.md -- that reproduces
- * identically with chaining removed, so whatever it is, it is not this. */
+ * Set explicitly rather than left to the default. It saves a chain walk per
+ * frame; it was not the fix for anything. */
 #define PBUF_POOL_BUFSIZE               (1536)
 #define PBUF_POOL_SIZE                  (16)
 

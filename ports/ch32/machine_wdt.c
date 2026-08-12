@@ -201,10 +201,25 @@ void machine_wdt_reset_cause_init(void) {
          * flags do not accumulate across boots -- RCC_ClearFlag() below sees
          * to that -- so PORRST really does mean this boot was a power-on. */
         machine_wdt_reset_cause_value = CH32_RESET_PWRON;
+    } else if (RCC_GetFlagStatus(RCC_FLAG_PINRST) != RESET) {
+        /* Also ahead of SFTRST, and for the same reason PORRST is: with SFTRST
+         * set on every boot, a pin reset was unreachable and every one of them
+         * reported SOFT_RESET.
+         *
+         * That is not a cosmetic ordering point. A supply sag on a board whose
+         * NRST is wired to a debug probe resets through this pin rather than
+         * through the power-on detector, so an under-powered board looks
+         * exactly like a software reset. Chasing one of those cost most of a
+         * day during Ethernet bring-up -- the board was being powered from the
+         * WCH-Link's 3V3, which could not carry the PHY under load. Reported
+         * as HARD_RESET it would have been obvious.
+         *
+         * Safe to test before SFTRST because the V3F stub's NVIC_WakeUp_V5F
+         * leaves SFTRST behind but not PINRST: measured, a normal boot reads
+         * RSTSCKR = 0x10000000, SFTRST alone. */
+        machine_wdt_reset_cause_value = CH32_RESET_HARD;
     } else if (RCC_GetFlagStatus(RCC_FLAG_SFTRST) != RESET) {
         machine_wdt_reset_cause_value = CH32_RESET_SOFT;
-    } else if (RCC_GetFlagStatus(RCC_FLAG_PINRST) != RESET) {
-        machine_wdt_reset_cause_value = CH32_RESET_HARD;
     } else {
         machine_wdt_reset_cause_value = 0;
     }
