@@ -60,26 +60,23 @@ time_t ch32_mbedtls_time(time_t *timer);
 #undef MBEDTLS_SSL_DTLS_CONNECTION_ID
 #undef MBEDTLS_TIMING_C
 
-/* RSA and finite-field DH out; ECC only.
+/* RSA is IN, up to 4096-bit keys.
  *
- * Be aware of what this costs at runtime: a large share of public HTTPS servers
- * still present RSA certificates, and this build cannot verify or even parse
- * them -- the handshake fails rather than falling back. ECDSA-only is a
- * deliberate choice here to fit the flash, not a general-purpose default. */
-#undef MBEDTLS_RSA_C
-#undef MBEDTLS_PKCS1_V15
-#undef MBEDTLS_PKCS1_V21
-#undef MBEDTLS_X509_RSASSA_PSS_SUPPORT
+ * It was cut when the image had to fit in the 448 KB OpenOCD would program;
+ * wlink writes the full 960 KB, so that constraint is gone. Keeping it out
+ * would have been a poor trade anyway -- most public HTTPS servers still
+ * present RSA certificates, so an ECDSA-only build fails the handshake
+ * against them rather than negotiating something else.
+ *
+ * MBEDTLS_MPI_MAX_SIZE defaults to 1024 bytes, which covers 8192-bit moduli,
+ * so 4096 needs no change here. Finite-field DH stays out: every modern
+ * server offers ECDHE, and DHM is pure code size for no gain. */
 #undef MBEDTLS_DHM_C
 #undef MBEDTLS_KEY_EXCHANGE_DHE_RSA_ENABLED
-#undef MBEDTLS_KEY_EXCHANGE_ECDHE_RSA_ENABLED
-#undef MBEDTLS_KEY_EXCHANGE_RSA_ENABLED
-#undef MBEDTLS_KEY_EXCHANGE_RSA_PSK_ENABLED
 #undef MBEDTLS_KEY_EXCHANGE_DHE_PSK_ENABLED
 #undef MBEDTLS_KEY_EXCHANGE_ECDHE_PSK_ENABLED
 #undef MBEDTLS_KEY_EXCHANGE_PSK_ENABLED
-#undef MBEDTLS_KEY_EXCHANGE_ECDH_RSA_ENABLED
-#undef MBEDTLS_KEY_EXCHANGE_ECDH_ECDSA_ENABLED
+#undef MBEDTLS_KEY_EXCHANGE_RSA_PSK_ENABLED
 
 /* Only the two curves anything real uses. Each dropped curve removes its
  * constants and its group arithmetic. */

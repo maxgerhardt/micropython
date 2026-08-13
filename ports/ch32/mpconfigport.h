@@ -193,6 +193,10 @@ uint64_t ch32_rng_u64(void);
 #define MICROPY_PY_MACHINE_I2S_CONSTANT_RX  (RX)
 #define MICROPY_PY_MACHINE_I2S_CONSTANT_TX  (TX)
 
+/* json: requests.json() needs it, and a board that talks to HTTP APIs without
+ * being able to parse their replies is only half useful. */
+#define MICROPY_PY_JSON                 (1)
+
 /* binascii: hexlify/unhexlify and base64. Not in this ROM level by default,
  * but HTTP and TLS work expects it -- base64 for Basic auth, hex for keys and
  * digests -- and the AES known-answer tests are written in hex. */
