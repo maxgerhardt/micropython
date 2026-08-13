@@ -1193,3 +1193,22 @@ delivering a different rate.
 
 `ports/ch32/test_i2s.py` covers this (15 checks); its signal checks skip
 cleanly when no microphone is attached.
+
+### Transmit status
+
+`mode=I2S.TX` drives the bus: with block A as master transmitter, SCK, WS and
+SD all toggle on PE5/PE4/PE6 and the DMA feeds the FIFO continuously. Note that
+a silent stream is a *flat* SD line, so "SD is not toggling" on its own means
+nothing — check it with a non-zero pattern, or the measurement is meaningless.
+
+What is **not** yet working is the natural way to verify TX end to end: a
+loopback with PE6 wired to PE3, block A transmitting and block B receiving
+synchronously. Block B latches `AFSDET` and `LFSDET` (anticipated and late
+frame sync) as soon as it is enabled and its DMA never moves a word, so nothing
+is captured. Enabling the synchronous block before the master -- which the
+driver now does, by restarting block A when `I2S(1)` is constructed -- is
+required but was not sufficient.
+
+So TX is unverified against a real receiver. The next thing to check is the
+`SYNCEN` encoding: the driver uses `SYNCEN=01` for "synchronous with the other
+internal sub-block", which is the STM32 meaning, and `GCR` reads `0x0`.

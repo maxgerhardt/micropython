@@ -14,6 +14,12 @@
  * directly, see docs/hw/ch32h417-notes.md. Hence SAI, despite the names.
  */
 
+/* stdlib.h is for abs(), which extmod/machine_i2s.c uses but does not include a
+ * header for. It gets away with it on toolchains that declare abs() as a
+ * builtin; CH32_TOOLCHAIN=generic does not, and the implicit declaration is an
+ * error there. This file is included into that one, so declaring it here is
+ * enough and keeps the fix in the port rather than in shared code. */
+#include <stdlib.h>
 #include <string.h>
 
 #include "py/mphal.h"
@@ -126,8 +132,15 @@ static const i2s_pin_t i2s_sck_pins_a[] = { { &pin_E5_obj, GPIO_AF6 } };
 static const i2s_pin_t i2s_ws_pins_a[] = { { &pin_E4_obj, GPIO_AF6 } };
 static const i2s_pin_t i2s_sd_pins_a[] = { { &pin_E6_obj, GPIO_AF6 } };
 
-static const i2s_pin_t i2s_sck_pins_b[] = { { &pin_A14_obj, GPIO_AF13 } };
-static const i2s_pin_t i2s_ws_pins_b[] = { { &pin_A15_obj, GPIO_AF13 } };
+/* Block B runs SYNCHRONOUS to block A: it takes SCK and FS from A over an
+ * internal path and drives no clock pins of its own. Its own SCK/FS options are
+ * PA14/PA15, which are VIO18 and therefore useless here anyway.
+ *
+ * So B is constructed with the SAME sck and ws pins as A -- they name the
+ * shared clocks rather than pins B configures -- and only its data pin, PE3,
+ * belongs to it. That is what makes full duplex cost one extra wire. */
+static const i2s_pin_t i2s_sck_pins_b[] = { { &pin_E5_obj, GPIO_AF6 } };
+static const i2s_pin_t i2s_ws_pins_b[] = { { &pin_E4_obj, GPIO_AF6 } };
 static const i2s_pin_t i2s_sd_pins_b[] = { { &pin_E3_obj, GPIO_AF6 } };
 
 static uint8_t i2s_find_af(const i2s_pin_t *table, size_t len, mp_hal_pin_obj_t pin) {
@@ -337,14 +350,36 @@ static void i2s_dma_init(machine_i2s_obj_t *self) {
 /******************************************************************************/
 // SAI
 
+/* Clear the sticky status flags. CLRFR sits at block offset 0x18, which the
+ * SDK's SAI_Block_TypeDef declares as RESERVED0 and provides no accessor for,
+ * hence the pointer arithmetic. Writing a 1 clears the corresponding flag;
+ * 0x77 covers all of them. The frame-sync errors in particular latch and never
+ * clear themselves, so a block that once saw a bad frame stays broken. */
+static void i2s_clear_flags(SAI_Block_TypeDef *block) {
+    volatile uint32_t *clrfr = (volatile uint32_t *)((uintptr_t)block + 0x18);
+    *clrfr = 0x77;
+}
+
 static void i2s_sai_init(machine_i2s_obj_t *self) {
     RCC_HB2PeriphClockCmd(RCC_HB2Periph_SAI, ENABLE);
     (void)RCC->HB2PCENR;
 
     SAI_Cmd(self->block, DISABLE);
 
+    /* Block A is the master and owns the clock pins. Block B is synchronous to
+     * it: slave mode plus SYNCEN, so it takes SCK and FS over the internal
+     * path rather than generating or receiving them on pins. A block B on its
+     * own, with no block A running, therefore has no clock and will not
+     * transfer -- which is the correct behaviour to expose, since its own
+     * clock pins are in the unusable voltage domain. */
+    bool sync = (self->i2s_id == 1);
+
     SAI_InitTypeDef init;
-    init.SAI_AudioMode = (self->mode == RX) ? SAI_Mode_MasterRx : SAI_Mode_MasterTx;
+    if (sync) {
+        init.SAI_AudioMode = (self->mode == RX) ? SAI_Mode_SlaveRx : SAI_Mode_SlaveTx;
+    } else {
+        init.SAI_AudioMode = (self->mode == RX) ? SAI_Mode_MasterRx : SAI_Mode_MasterTx;
+    }
     init.SAI_Protocol = SAI_Free_Protocol;
     init.SAI_DataSize = (i2s_hw_bits(self) == 16) ? SAI_DataSize_16b : SAI_DataSize_32b;
     init.SAI_FirstBit = SAI_FirstBit_MSB;
@@ -352,7 +387,7 @@ static void i2s_sai_init(machine_i2s_obj_t *self) {
      * receiver strobes rising and a transmitter falling. */
     init.SAI_ClockStrobing = (self->mode == RX) ? SAI_ClockStrobing_RisingEdge
                                                 : SAI_ClockStrobing_FallingEdge;
-    init.SAI_Synchro = SAI_Asynchronous;
+    init.SAI_Synchro = sync ? SAI_Synchronous : SAI_Asynchronous;
     init.SAI_OutDRIV = SAI_Output_NotReleased;
     // No master clock; disabling the divider is what puts SCK straight on MCKDIV.
     init.SAI_NoDivider = SAI_MasterDivider_Disabled;
@@ -470,8 +505,12 @@ static void mp_machine_i2s_init_helper(machine_i2s_obj_t *self, mp_arg_val_t *ar
         self->dma_irqn = DMA1_Channel5_IRQn;
     }
 
-    i2s_pin_init(sck, sck_af, false);
-    i2s_pin_init(ws, ws_af, false);
+    /* Block B does not own the clock pins -- block A drives them, and
+     * reconfiguring them here would just fight it. Only its data pin is B's. */
+    if (self->i2s_id == 0) {
+        i2s_pin_init(sck, sck_af, false);
+        i2s_pin_init(ws, ws_af, false);
+    }
     i2s_pin_init(sd, sd_af, self->mode == RX);
 
     machine_i2s_active[self->i2s_id] = self;
@@ -487,6 +526,29 @@ static void mp_machine_i2s_init_helper(machine_i2s_obj_t *self, mp_arg_val_t *ar
     i2s_dma_init(self);
     SAI_FlushFIFO(self->block);
     SAI_Cmd(self->block, ENABLE);
+
+    /* A synchronous block must already be running when the master starts.
+     * Block A is enabled the moment I2S(0) is constructed, so by the time
+     * I2S(1) exists the frames are already flowing and block B meets its first
+     * frame sync somewhere in the middle of one. It then latches AFSDET and
+     * LFSDET -- anticipated and late frame sync -- and never transfers a
+     * single word, which looks like a dead DMA rather than a timing problem.
+     *
+     * Restarting the master here puts the pair in the documented order:
+     * synchronous block enabled first, master second. Doing it inside the
+     * driver keeps it off the user, who would otherwise have to construct the
+     * two objects in an order the API gives no hint about. */
+    if (self->i2s_id == 1) {
+        machine_i2s_obj_t *master = machine_i2s_active[0];
+        if (master != NULL && master->block != NULL) {
+            SAI_Cmd(master->block, DISABLE);
+            SAI_Cmd(self->block, DISABLE);
+            SAI_FlushFIFO(self->block);
+            i2s_clear_flags(self->block);
+            SAI_Cmd(self->block, ENABLE);
+            SAI_Cmd(master->block, ENABLE);
+        }
+    }
 }
 
 static machine_i2s_obj_t *mp_machine_i2s_make_new_instance(mp_int_t i2s_id) {
