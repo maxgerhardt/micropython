@@ -34,6 +34,16 @@ MICROPY_VFS_FAT = 1
 MICROPY_PY_LWIP = 1
 INC += -I$(BOARD_DIR) -Ilwip_inc
 
+# TLS. extmod.mk pulls in lib/mbedtls and expects the config file to be
+# reachable as "mbedtls/mbedtls_config_port.h", hence the port directory on the
+# include path rather than the mbedtls one.
+MICROPY_PY_SSL = 1
+MICROPY_SSL_MBEDTLS = 1
+# ports/ch32 so the config resolves as "mbedtls/mbedtls_config_port.h";
+# ports/ch32/mbedtls because MBEDTLS_AES_ALT makes mbedtls/aes.h include a bare
+# "aes_alt.h" that has to be findable on its own.
+INC += -I$(TOP)/ports/ch32 -I$(TOP)/ports/ch32/mbedtls
+
 include $(TOP)/py/py.mk
 include $(TOP)/extmod/extmod.mk
 
@@ -143,6 +153,8 @@ SRC_C += \
 	eth.c \
 	network_lan.c \
 	mpnetworkport.c \
+	mbedtls/mbedtls_port.c \
+	mbedtls/aes_alt.c \
 	framebuf_accel.c \
 	system_ch32h417_$(CH32_CORE).c \
 	machine_wdt.c \

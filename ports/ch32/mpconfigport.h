@@ -193,6 +193,22 @@ uint64_t ch32_rng_u64(void);
 #define MICROPY_PY_MACHINE_I2S_CONSTANT_RX  (RX)
 #define MICROPY_PY_MACHINE_I2S_CONSTANT_TX  (TX)
 
+/* binascii: hexlify/unhexlify and base64. Not in this ROM level by default,
+ * but HTTP and TLS work expects it -- base64 for Basic auth, hex for keys and
+ * digests -- and the AES known-answer tests are written in hex. */
+#define MICROPY_PY_BINASCII             (1)
+#define MICROPY_PY_BINASCII_CRC32       (1)
+
+/* TLS on mbedtls, with AES on the ECDC accelerator and the hardware TRNG
+ * seeding the entropy pool -- see ports/ch32/mbedtls/. */
+#define MICROPY_PY_SSL                  (1)
+#define MICROPY_SSL_MBEDTLS             (1)
+/* mbedtls allocates through m_tracked_calloc/free so its buffers are visible
+ * to the GC and released on soft reset; without this the link fails outright. */
+#define MICROPY_TRACKED_ALLOC           (MICROPY_SSL_MBEDTLS)
+#define MICROPY_PY_HASHLIB_SHA1         (1)
+#define MICROPY_PY_HASHLIB_SHA256       (1)
+
 // Networking: lwip on the on-chip Ethernet MAC and 100M PHY.
 #define MICROPY_PY_NETWORK              (1)
 #define MICROPY_PY_NETWORK_LAN          (1)

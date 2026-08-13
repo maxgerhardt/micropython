@@ -46,7 +46,8 @@ SDK_SRC_C := \
 	$(SDK)/Peripheral/src/ch32h417_exti.c \
 	$(SDK)/Peripheral/src/ch32h417_rng.c \
 	$(SDK)/Peripheral/src/ch32h417_eth.c \
-	$(SDK)/Peripheral/src/ch32h417_sai.c
+	$(SDK)/Peripheral/src/ch32h417_sai.c \
+	$(SDK)/Peripheral/src/ch32h417_ecdc.c
 
 # Drop any that do not exist in this SDK revision.
 SDK_SRC_C := $(wildcard $(SDK_SRC_C))
