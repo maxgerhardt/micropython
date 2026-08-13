@@ -1212,3 +1212,32 @@ required but was not sufficient.
 So TX is unverified against a real receiver. The next thing to check is the
 `SYNCEN` encoding: the driver uses `SYNCEN=01` for "synchronous with the other
 internal sub-block", which is the STM32 meaning, and `GCR` reads `0x0`.
+
+### Flashing images over 448 KB
+
+**OpenOCD cannot do it; use `wlink`.** Both builds tried -- PlatformIO's and
+MounRiver Studio 2's 2026-07-23 snapshot (OpenOCD 0.11.0+dev) -- stop erasing
+and programming at `0x70000` while reporting `flash size = 512kbytes` and
+`** Verified OK **`. `verify_image` puts the first difference at exactly
+`0x00070000`.
+
+This is a host-tool limit, not the chip. `FLASH_CFGR0` reads `0x96070200`, so
+`DBMODE` is already 1 and the part really does have 960 KB; `wlink 0.1.2`
+reports `FlashSize(960KB)` and writes the whole image:
+
+    wlink erase
+    wlink flash --address 0x08000000 firmware.bin
+
+The failure is nasty because it does not look like a flashing problem. The V5F
+copies a truncated `.highcode` into RAM and faults on an illegal instruction --
+with `mepc` landing *mid-instruction* -- before UART is initialised, so the
+board is silent and only the V3F stub's banner repeats.
+
+**Do not mix the two tools.** An OpenOCD erase clears only the first 448 KB, so
+content from an earlier `wlink` write survives beyond that and the board
+boot-loops. Erase with `wlink` before reflashing with `wlink`.
+
+OpenOCD remains the right tool for **debugging**: halt, registers, memory and
+GDB all work against both cores. Verified on the MounRiver build -- halting the
+V5F mid-run gave `pc = 0x2012e8ae` in `RAM_CODE` with CSRs and memory readable,
+and `resume` continued normally.
