@@ -58,6 +58,19 @@ static mp_obj_t ch32_gpha_ops(void) {
 static MP_DEFINE_CONST_FUN_OBJ_0(ch32_gpha_ops_obj, ch32_gpha_ops);
 #endif
 
+#if MICROPY_PY_MACHINE_I2S
+/* The sample rate the SAI divider could actually produce, which is not always
+ * the one asked for: MCKDIV is 6 bits, so the achievable rates are coarse.
+ * Exposed because a few tenths of a percent off shows up as a pitch shift in
+ * a recording and is otherwise invisible. */
+uint32_t machine_i2s_actual_rate(mp_int_t i2s_id);
+
+static mp_obj_t ch32_i2s_actual_rate(mp_obj_t id_in) {
+    return mp_obj_new_int_from_uint(machine_i2s_actual_rate(mp_obj_get_int(id_in)));
+}
+static MP_DEFINE_CONST_FUN_OBJ_1(ch32_i2s_actual_rate_obj, ch32_i2s_actual_rate);
+#endif
+
 #if MICROPY_PY_NETWORK_LAN
 #include "eth.h"
 
@@ -131,6 +144,9 @@ static const mp_rom_map_elem_t ch32_module_globals_table[] = {
     { MP_ROM_QSTR(MP_QSTR_Flash),    MP_ROM_PTR(&ch32_flash_type) },
     { MP_ROM_QSTR(MP_QSTR_stack_usage), MP_ROM_PTR(&ch32_stack_usage_obj) },
     { MP_ROM_QSTR(MP_QSTR_reset_flags), MP_ROM_PTR(&ch32_reset_flags_obj) },
+    #if MICROPY_PY_MACHINE_I2S
+    { MP_ROM_QSTR(MP_QSTR_i2s_actual_rate), MP_ROM_PTR(&ch32_i2s_actual_rate_obj) },
+    #endif
     #if MICROPY_PY_FRAMEBUF_ACCEL
     { MP_ROM_QSTR(MP_QSTR_framebuf_accel), MP_ROM_PTR(&ch32_framebuf_accel_obj) },
     { MP_ROM_QSTR(MP_QSTR_gpha_available), MP_ROM_PTR(&ch32_gpha_available_obj) },

@@ -185,6 +185,14 @@ uint64_t ch32_rng_u64(void);
 #define MICROPY_HW_USB_MANUFACTURER_STRING "WCH"
 #define MICROPY_HW_USB_PRODUCT_FS_STRING   "CH32H417 MicroPython"
 
+/* I2S on the SAI peripheral. Most of the class is shared code in
+ * extmod/machine_i2s.c; ports/ch32/machine_i2s.c supplies the hardware half. */
+#define MICROPY_PY_MACHINE_I2S              (1)
+#define MICROPY_PY_MACHINE_I2S_INCLUDEFILE  "ports/ch32/machine_i2s.c"
+#define MICROPY_PY_MACHINE_I2S_RING_BUF     (1)
+#define MICROPY_PY_MACHINE_I2S_CONSTANT_RX  (RX)
+#define MICROPY_PY_MACHINE_I2S_CONSTANT_TX  (TX)
+
 // Networking: lwip on the on-chip Ethernet MAC and 100M PHY.
 #define MICROPY_PY_NETWORK              (1)
 #define MICROPY_PY_NETWORK_LAN          (1)

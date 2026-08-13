@@ -1118,3 +1118,78 @@ indistinguishable from Python.
 `ch32.stack_usage()` returns `(peak_bytes_used, total)`. The stack grows down
 into the GC heap with no guard between them, so an overflow corrupts objects
 instead of trapping; this is the only warning available.
+
+## I2S
+
+`machine.I2S` on the **SAI** peripheral. Most of the class is shared code in
+`extmod/machine_i2s.c`; `ports/ch32/machine_i2s.c` supplies the hardware half.
+
+```python
+from machine import I2S, Pin
+i2s = I2S(0, sck=Pin("PE5"), ws=Pin("PE4"), sd=Pin("PE6"),
+          mode=I2S.RX, bits=32, format=I2S.MONO, rate=16000, ibuf=16384)
+buf = bytearray(4096)
+i2s.readinto(buf)
+```
+
+Blocking, non-blocking (`irq()`) and asyncio modes all come from the shared
+code. `I2S(0)` is SAI block A; `I2S(1)` is block B.
+
+### Not the peripherals named "I2S"
+
+The datasheet offers I2S2 and I2S3, riding on SPI2/SPI3, with a ready-made SDK
+driver. They are unusable on this board: **every pin either can reach is in the
+VIO18 domain, which measures about 1.2 V here.** That cannot meet the input
+threshold of a 3.3 V audio device, and the device's 3.3 V output into a 1.2 V
+pad is a large overdrive. Checked all of them — CK, WS, SD and MCK across
+PA4/PA9/PA11-PA15, PB1/PB3-PB5/PB9-PB15, PC1/PC3/PC6/PC7/PC9/PC10/PC12,
+PD3/PD6 and PF14 — and no complete pin set is in the 3.3 V domain.
+
+SAI block A reaches PE2 (MCLK), PE4 (FS), PE5 (SCK) and PE6 (SD), and PE2/PE5/PE6
+are *measured* 3.3 V, being SPI4's default pins. Hence SAI, despite the names.
+
+### Wiring an INMP441
+
+    VDD -> 3V3      SCK -> PE5
+    GND -> GND      WS  -> PE4
+    L/R -> GND      SD  -> PE6
+
+`L/R` to ground puts the microphone in the left channel, which is slot 0 — the
+slot `MONO` reads. No MCLK is needed; the part derives everything from SCK.
+
+**The low 8 bits of each sample are not signal.** The microphone sends 24 bits
+into a 32-bit slot and tri-states SD for the rest, and a floating input holds
+the last level on pin capacitance, so those bits come back as a copy of bit 8.
+Mask them, or fit the 100k pulldown on the SD trace that the microphone's
+datasheet asks for. It has to be an external resistor — see below.
+
+### Three things that cost real time here
+
+**The SD pin must be a floating input.** Reference manual table 9-6 says a pull
+is allowed — *"I2Sx_SD Receiver: Floating input or pull-up or pull-down input"*
+— and on this silicon that is wrong. With `CNF=10` the pad still works and
+still follows the microphone, measurably, but the SAI samples nothing and every
+word is zero. Only `CNF=01` routes the pad to the peripheral. So the datasheet's
+recommended pulldown cannot be the internal one.
+
+**Start the SAI after the DMA is armed, not before.** Enabling it first lets the
+FIFO fill during the gap, so the DMA can begin on the second slot of a frame and
+left/right stay swapped for the life of the object. It is not consistently
+wrong either — it depends on how long that window happens to be, which is what
+made `MONO` look fine while `STEREO` came out reversed.
+
+**Frame sync is active low**, because I2S holds WS low for the left channel and
+slot 0 begins at the FS active edge. Flipping it appears to fix the swapped-slot
+symptom above and does not: it only cancels the ordering bug, and only
+sometimes.
+
+### Rate accuracy
+
+MCKDIV is 6 bits, so the achievable rates are coarse and none is exact.
+`ch32.i2s_actual_rate(id)` reports what the divider really produced — 16000
+requested gives **15943 Hz**, 0.36% low. Below roughly 12 kHz at a 100 MHz SAI
+clock the divider runs out and the constructor raises rather than quietly
+delivering a different rate.
+
+`ports/ch32/test_i2s.py` covers this (15 checks); its signal checks skip
+cleanly when no microphone is attached.
