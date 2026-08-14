@@ -1,5 +1,11 @@
-# MicroPython port for the WCH CH32H417 (QingKe V3F core).
-BOARD ?= CH32H417QEU6_V3F
+# MicroPython port for the WCH CH32H417.
+#
+# The chip has two cores and this port uses both, but not symmetrically: the
+# V3F runs the boot stub in boot_v3f/, which sets up the clock tree and starts
+# the V5F, and the V5F runs MicroPython. There was once a second board that
+# built a whole MicroPython image for the V3F instead, from before the V5F
+# worked; it is gone, and firmware.bin is always stub + V5F image merged.
+BOARD ?= CH32H417QEU6_V5F
 BOARD_DIR ?= boards/$(BOARD)
 
 ifeq ($(wildcard $(BOARD_DIR)/.),)
@@ -263,7 +269,6 @@ SCRIPTS = ../../../scripts
 $(BOOT_V3F_ELF):
 	$(MAKE) -C boot_v3f CROSS=$(CROSS_COMPILE)
 
-ifeq ($(CH32_CORE),v5f)
 # The flash driver mass-erases on every program command, so the stub and the
 # MicroPython image cannot be written as two operations -- the second wipes the
 # first while still reporting "Verified OK". They are merged and written once.
@@ -275,13 +280,6 @@ $(BUILD)/firmware.bin: $(BUILD)/firmware.elf $(BOOT_V3F_ELF)
 	$(Q)CROSS_COMPILE=$(CROSS_COMPILE) $(PYTHON) merge_flash.py -o $@ $(BOOT_V3F_ELF) $(BUILD)/firmware.elf
 
 firmware.bin: $(BUILD)/firmware.bin
-else
-deploy: $(BUILD)/firmware.elf
-	bash $(SCRIPTS)/flash.sh $(BUILD)/firmware.elf 0
-
-firmware.bin: $(BUILD)/firmware.elf
-	$(Q)$(OBJCOPY) -O binary $< $(BUILD)/firmware.bin
-endif
 
 .PHONY: deploy firmware.bin
 

@@ -611,9 +611,9 @@ function ci_ch32_wch_build {
     # every program command, so the V3F stub and the V5F image have to be
     # written as one object.
     #
-    # Only the V5F board is built. The V3F is not a supported target -- its
-    # role is the boot stub in ports/ch32/boot_v3f, which firmware.bin already
-    # contains and which is built as part of it. See boards/CH32H417QEU6_V3F.
+    # There is one board. The V3F's role is the boot stub in
+    # ports/ch32/boot_v3f, which firmware.bin already contains and which is
+    # built as part of it.
     make ${MAKEOPTS} -C ports/ch32 BOARD=CH32H417QEU6_V5F CROSS_COMPILE=riscv-wch-elf- firmware.bin
     ci_ch32_size_report riscv-wch-elf-size
 }

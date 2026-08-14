@@ -27,48 +27,29 @@ import ch32
 # to hardcode, so shared buffers come from the heap instead.
 #
 # gc_alloc searches area 1 (DTCM) first and only falls through to area 2 when
-# area 1 cannot satisfy the request, so the only way to place an object outside
-# DTCM is to leave area 1 with nothing free. _ballast holds what that costs;
-# release_shared() drops it, without which the later DTCM cases have no room.
+# area 1 has no hole big enough, so a shared buffer has to be preceded by
+# filling area 1. _ballast holds what that costs; release_shared() drops it,
+# without which the later DTCM cases have no room.
 DTCM_END = 0x20100000
 _ballast = []
 
 
-def _fill_dtcm():
-    """Occupy heap area 1 entirely, so later allocations land in area 2.
-
-    A freshly collected area has one contiguous free run, so a single
-    correctly sized allocation fills it; the loop is a binary search for that
-    run's length. Filling rather than merely shrinking it matters because the
-    buffers below go down to 640 bytes, and any free tail left in DTCM would
-    swallow those -- the small cases would then silently test the DTCM path
-    twice and never reach the GPHA at all.
-    """
-    if _ballast:
-        return
-    gc.collect()
-    lo, hi = 0, 256 * 1024
-    while lo < hi:
-        mid = (lo + hi + 1) >> 1
-        try:
-            in_dtcm = uctypes.addressof(bytearray(mid)) < DTCM_END
-        except MemoryError:
-            in_dtcm = False
-        gc.collect()
-        if in_dtcm:
-            lo = mid
-        else:
-            hi = mid - 1
-    _ballast.append(bytearray(lo))
-
-
 def shared_bytearray(n):
-    """A bytearray outside DTCM, i.e. in the GC's second heap area."""
-    _fill_dtcm()
-    buf = bytearray(n)
-    if uctypes.addressof(buf) < DTCM_END:
-        raise MemoryError("could not place a %d byte buffer outside DTCM" % n)
-    return buf
+    """A bytearray outside DTCM, i.e. in the GC's second heap area.
+
+    Bites n bytes at a time and keeps whatever lands in DTCM, until one comes
+    back from area 2. Taking a single block the length of area 1's largest
+    free run is not enough: module globals and earlier objects sit in the
+    middle of the area, so smaller holes survive around the largest run and
+    swallow the buffers here, which go down to 640 bytes. A case that quietly
+    got a DTCM buffer would run the DTCM path twice and never reach the GPHA.
+    """
+    for _ in range(256 * 1024 // max(n, 16) + 64):
+        buf = bytearray(n)
+        if uctypes.addressof(buf) >= DTCM_END:
+            return buf
+        _ballast.append(buf)
+    raise MemoryError("could not place a %d byte buffer outside DTCM" % n)
 
 
 def release_shared():
@@ -103,8 +84,11 @@ def run_one(fn, w, h, stride, where, mode):
         # referenced through the whole call, so the view cannot outlive it.
         owner = shared_bytearray(n + 2)
         buf = uctypes.bytearray_at(uctypes.addressof(owner) + 2, n)
-    for i in range(n):
-        buf[i] = 0x5A
+    # Prefill with a value no case draws, so a byte the operation failed to
+    # touch is distinguishable from one it wrote. By slice rather than by a
+    # Python loop over range(n): the loop dominated the run time, and at three
+    # backends per case it was most of the twelve minutes this file took.
+    buf[:] = b"\x5a" * n
     fb = framebuf.FrameBuffer(buf, w, h, framebuf.RGB565, stride)
     fn(fb)
     return bytes(buf)
