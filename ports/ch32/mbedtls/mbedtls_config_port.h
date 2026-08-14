@@ -104,6 +104,17 @@ time_t ch32_mbedtls_time(time_t *timer);
 #undef MBEDTLS_NIST_KW_C
 #undef MBEDTLS_CCM_C
 
+/* CTR is not in MicroPython's common config, and MICROPY_PY_CRYPTOLIB_CTR
+ * needs it: extmod/modcryptolib.c calls mbedtls_aes_crypt_ctr(), which
+ * mbedtls/aes.h only declares when this is set.
+ *
+ * aes_alt.c defines that function unconditionally, so without this the call
+ * still linked and still produced the right answer -- it was only an implicit
+ * declaration. GCC 12 in the WCH toolchain warns about that; GCC 15 in the
+ * generic one makes it an error, which is how CI caught it and hardware did
+ * not. Costs nothing here because the implementation is compiled either way. */
+#define MBEDTLS_CIPHER_MODE_CTR
+
 // Hashes beyond SHA-1/224/256/384/512. MD5 stays: X.509 parsing still wants it.
 #undef MBEDTLS_RIPEMD160_C
 #undef MBEDTLS_SHA3_C
