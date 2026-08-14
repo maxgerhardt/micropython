@@ -1242,9 +1242,20 @@ blocks each, so a long transfer still uses multi-block commands.
 
 The vendor's `EVT/EXAM/SDMMC/SDMMC_SD` example is worth reading before changing
 any of this — it is where the arming order and the per-block `WRITE_CONT` kick
-for multi-block writes come from. It also enables the SWPMI clock and sets
-`SWPMI->OR` bit 0 as part of SD pin setup, which is undocumented and unrelated
-on its face but which the controller needs.
+for multi-block writes come from.
+
+Two lines of its `SD_GPIO_Init()` are not needed, both checked on hardware:
+
+- It enables **DMA1's clock**. This controller has its own DMA engine and never
+  touches DMA1 — `RCC->HBPCENR` bit 0 stays clear through a verified 8-block
+  write, so the port does not enable it.
+- It sets **`SWPMI->OR` bit 0** (`SWP_TBYP`, "disable internal transceiver").
+  That is not as unrelated as it looks: SWPMI shares pads with this
+  controller — `SWPMI_IO` is PC6 and `SWP_TX`/`RX`/`SUP` are PC7/PC8/PC9,
+  which are SDMMC D6/D7/**D0**/**D1**. Measured, 1-bit mode passes without it,
+  so the transceiver at its reset setting does not hold DAT0. The port keeps
+  it anyway: it is one register write, and 4-bit mode also needs PC9, which
+  there is no wiring here to test.
 
 ## Capacitive touch
 

@@ -226,12 +226,20 @@ static void sd_pin_release(uint8_t id) {
 }
 
 static void sd_controller_reset(uint8_t width) {
-    /* DMA1's clock and SWPMI's OR bit come from the vendor's SD_GPIO_Init().
-     * Neither is documented as an SDMMC dependency and neither is obviously
-     * related -- SWPMI is a single-wire smartcard-ish interface that happens
-     * to share these pads -- but the controller does not move data without
-     * them, and they cost nothing. */
-    RCC_HBPeriphClockCmd(RCC_HBPeriph_SDMMC | RCC_HBPeriph_DMA1, ENABLE);
+    RCC_HBPeriphClockCmd(RCC_HBPeriph_SDMMC, ENABLE);
+
+    /* SWP_TBYP disables SWPMI's internal transceiver, which releases its
+     * signals to the GPIO mux. That matters here because SWPMI shares pads
+     * with this controller: SWPMI_IO is PC6, and SWP_TX/RX/SUP are PC7, PC8
+     * and PC9 -- which are SDMMC D6, D7, D0 and D1.
+     *
+     * Measured: 1-bit mode passes its whole suite without this, so the
+     * transceiver at its reset setting does not actually hold DAT0 on PC8.
+     * It is kept anyway because the vendor's SD_GPIO_Init() does it, because
+     * 4-bit mode also needs PC9 and there is no 4-bit wiring here to test it
+     * on, and because it costs one register write. The clock stays on
+     * afterwards rather than being gated again, since nothing says the bit
+     * survives its block being gated. */
     RCC_HB1PeriphClockCmd(RCC_HB1Periph_SWPMI, ENABLE);
     SWPMI->OR |= (1u << 0);
 
