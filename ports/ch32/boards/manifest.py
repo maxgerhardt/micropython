@@ -11,6 +11,12 @@ require("dht")
 # is the whole driver.
 require("neopixel")
 
+# 1-Wire and the DS18B20 family on top of it. onewire.py is the protocol in
+# Python over the _onewire C module, and ds18x20.py is the sensor on top; the
+# pair is useless apart, so they are frozen together the way dht is.
+require("onewire")
+require("ds18x20")
+
 # HTTP client. requests pulls in nothing else and works over either a plain
 # socket or an ssl-wrapped one, so `import requests` covers http and https
 # without a filesystem present.

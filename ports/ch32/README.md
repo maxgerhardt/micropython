@@ -1100,6 +1100,36 @@ the order — `Counter()` reconfigures the pin as a floating input, so a
 viper loop writing the wrong one toggles nothing, counts nothing, and looks
 exactly like a broken ETR.
 
+## 1-Wire
+
+`onewire` and `ds18x20` are frozen in, so a DS18B20 works on a blank board:
+
+    from machine import Pin
+    import onewire, ds18x20, time
+
+    ds = ds18x20.DS18X20(onewire.OneWire(Pin("PB5")))
+    roms = ds.scan()
+    ds.convert_temp()
+    time.sleep_ms(750)
+    for rom in roms:
+        print(ds.read_temp(rom))
+
+There is no 1-Wire peripheral on this part — SWI is a smartcard interface and
+speaks nothing like it — and none is needed. `extmod/modonewire.c` does the
+whole protocol on one open-drain pin inside the same
+`mp_hal_quiet_timing_enter()` critical section that `dht_readinto()` and
+`machine.bitstream()` already use, so enabling it was one config line.
+
+**The bus needs an external pull-up and this chip cannot supply one.** Its GPIO
+has no pull in any output mode, so the `pin.init(OPEN_DRAIN, PULL_UP)` inside
+`onewire.py` does nothing here. Use the usual **4.7 kΩ to 3V3**.
+
+Leaving it out does not fail quietly in the helpful direction: a floating bus
+reads low, so every `reset()` reports a device that is not there and `scan()`
+then hunts for it. Measured both ways on a strapped pair — with a pull-up,
+`reset()` is `False` and `scan()` is `[]`; floating, `reset()` is `True` every
+time.
+
 ## Capacitive touch
 
 `machine.TouchPad` uses the TKEY peripheral, which is not a separate block at
