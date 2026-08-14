@@ -850,6 +850,7 @@ matter more on a board than they do in general:
 | `time.time()`, `localtime()`, `mktime()` | Answered by the RTC. |
 | Unicode `str` | So `"°C"` prints as `°C`. |
 | `binascii` | Hex and base64, which HTTP and TLS work assumes. |
+| `machine.bitstream` | The timed pin driver WS2812 strips need; see below. |
 | `hashlib` | `md5`, `sha1`, `sha256`. mbedtls already implements all three for TLS, so the module is a wrapper and costs almost nothing. |
 | `cryptolib` AES-CTR | ECB and CBC arrive with `MICROPY_PY_SSL`; CTR is off upstream by default. |
 
@@ -914,6 +915,40 @@ switches off `MICROPY_PERSISTENT_CODE_TRACK_FUN_DATA` unless the port asks for
 it back, which `mpconfigport.h` does: the text is still GC-heap allocated, and
 an untracked block is collectable while a pointer into its middle is the only
 thing keeping a native function alive.
+
+## NeoPixel
+
+`neopixel` is frozen in, so a WS2812 strip works on a blank board:
+
+    import machine, neopixel
+    np = neopixel.NeoPixel(machine.Pin("PA5", machine.Pin.OUT), 8)
+    np[0] = (255, 0, 0)
+    np.write()
+
+The driver is nothing but a bytearray and a call to `machine.bitstream()`,
+which `machine_bitstream.c` implements against `SysTick0->CNT`. Two properties
+of that counter shape it, and getting either wrong still produces a waveform —
+just one nothing will decode:
+
+- It ticks at **HCLK, 100 MHz**, not at the V5F's 400 MHz core clock. A
+  conversion through `SystemCoreClock` comes out four times too fast. The rate
+  is recovered from the compare register rather than assumed.
+- It **reloads every millisecond** rather than free-running, so a plain
+  `now - start` goes wrong across the reload, in the direction that ends a bit
+  early. Every comparison wraps explicitly; a bit is ~125 ticks against a
+  period of 100 000, so at most one reload lands inside a bit.
+
+Interrupts are masked for the transfer, because one landing in a bit's high
+phase stretches a zero into what a WS2812 reads as a one. That stalls the
+millisecond clock — 400 LEDs is 13 ms — so the loop counts the reloads and
+hands them back before unmasking. `mp_hal_systick_recover_ms()` exists for
+that; `systick_catch_up()` alone can only ever recover one, because the
+overflow flag and the pending bit are each a single bit.
+
+Timing measures 4–9% long, which is deliberate. The overhead compensation
+under-corrects because the two errors are not symmetric: a long *period* is
+free, since WS2812 only cares that the gap stays under the ~50 µs that latches
+the strip, while a short *high* time is what turns a one into a zero.
 
 ## RTC alarms
 

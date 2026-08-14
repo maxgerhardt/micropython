@@ -149,6 +149,7 @@ SRC_C += \
 	flashbdev.c \
 	modch32.c \
 	machine_pin.c \
+	machine_bitstream.c \
 	machine_i2c.c \
 	machine_spi.c \
 	machine_dac.c \

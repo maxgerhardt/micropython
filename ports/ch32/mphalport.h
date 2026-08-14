@@ -77,6 +77,10 @@ void mp_hal_atomic_exit(uint32_t state);
 uint32_t mp_hal_quiet_timing_enter(void);
 void mp_hal_quiet_timing_exit(uint32_t state);
 
+/* Put back milliseconds lost while interrupts were masked; see the comment on
+ * the implementation. Call before mp_hal_quiet_timing_exit(). */
+void mp_hal_systick_recover_ms(uint32_t ms);
+
 // Provided by the SDK's system_ch32h417.c.
 extern uint32_t SystemCoreClock;
 

@@ -254,6 +254,23 @@ void mp_hal_quiet_timing_exit(uint32_t state) {
     mp_hal_atomic_exit(state);
 }
 
+/* Hand back milliseconds that elapsed while interrupts were masked.
+ *
+ * systick_catch_up() recovers exactly one, because the overflow flag is a
+ * single bit and NVIC latches a single pending interrupt no matter how many
+ * times SysTick reloaded meanwhile. Anything masked for longer than about a
+ * millisecond therefore loses the rest, silently: machine.bitstream() writing
+ * 400 WS2812 LEDs takes 13 ms and the clock advanced by 1.
+ *
+ * Only a caller that counted the reloads itself can put them back, so this
+ * takes the count rather than trying to work it out. Pass the number of
+ * reloads observed *minus one*, leaving the one already latched to the
+ * handler, and call it while still masked -- adding after the unmask races
+ * with the handler doing its own increment. */
+void mp_hal_systick_recover_ms(uint32_t ms) {
+    systick_ms += ms;
+}
+
 /* Stack instrumentation.
  *
  * The stack occupies the top of DTCM and grows DOWN towards the GC heap, with

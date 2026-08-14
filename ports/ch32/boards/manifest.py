@@ -6,6 +6,11 @@
 # freeze the pair together the way ports/esp8266 does.
 require("dht")
 
+# WS2812 / SK6812 strips. neopixel.py is nothing but a bytearray and a call to
+# machine.bitstream(), which ports/ch32/machine_bitstream.c provides, so this
+# is the whole driver.
+require("neopixel")
+
 # HTTP client. requests pulls in nothing else and works over either a plain
 # socket or an ssl-wrapped one, so `import requests` covers http and https
 # without a filesystem present.

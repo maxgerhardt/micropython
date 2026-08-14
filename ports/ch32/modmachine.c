@@ -63,6 +63,25 @@ static mp_int_t mp_machine_reset_cause(void) {
  * it here is what makes the stock DHT11/DHT22 driver work unmodified. */
 #include "drivers/dht/dht.h"
 
+/* The sleep modes, as a bitmask, for the wake= argument of Pin.irq() and
+ * RTC.irq(). The numbering is the one every other port uses.
+ *
+ * Both irq() implementations here accept wake and ignore it, and that is
+ * honest rather than lazy: a pin interrupt is an EXTI line and the RTC alarm
+ * is EXTI line 17, and EXTI is not clock-gated in Stop, so anything that can
+ * interrupt at all can also wake the chip. There is nothing to select.
+ *
+ * machine.wake_reason() is deliberately absent for the same reason there is
+ * nothing to select. lightsleep(ms) is a delay loop over WFI, so SysTick wakes
+ * the core every millisecond and no single event is "the" wake; deepsleep()
+ * resets on the way out, so what woke it is reset_cause() == DEEPSLEEP_RESET
+ * and there is no second thing to report. */
+enum {
+    CH32_WAKE_IDLE = 0x01,
+    CH32_WAKE_SLEEP = 0x02,
+    CH32_WAKE_DEEPSLEEP = 0x04,
+};
+
 #define MICROPY_PY_MACHINE_EXTRA_GLOBALS \
     { MP_ROM_QSTR(MP_QSTR_Pin), MP_ROM_PTR(&machine_pin_type) }, \
     { MP_ROM_QSTR(MP_QSTR_DAC), MP_ROM_PTR(&machine_dac_type) }, \
@@ -71,5 +90,9 @@ static mp_int_t mp_machine_reset_cause(void) {
     { MP_ROM_QSTR(MP_QSTR_PWRON_RESET), MP_ROM_INT(CH32_RESET_PWRON) }, \
     { MP_ROM_QSTR(MP_QSTR_HARD_RESET), MP_ROM_INT(CH32_RESET_HARD) }, \
     { MP_ROM_QSTR(MP_QSTR_WDT_RESET), MP_ROM_INT(CH32_RESET_WDT) }, \
-    { MP_ROM_QSTR(MP_QSTR_SOFT_RESET), MP_ROM_INT(CH32_RESET_SOFT) },     { MP_ROM_QSTR(MP_QSTR_DEEPSLEEP_RESET), MP_ROM_INT(CH32_RESET_DEEPSLEEP) }, \
+    { MP_ROM_QSTR(MP_QSTR_SOFT_RESET), MP_ROM_INT(CH32_RESET_SOFT) }, \
+    { MP_ROM_QSTR(MP_QSTR_DEEPSLEEP_RESET), MP_ROM_INT(CH32_RESET_DEEPSLEEP) }, \
+    { MP_ROM_QSTR(MP_QSTR_IDLE), MP_ROM_INT(CH32_WAKE_IDLE) }, \
+    { MP_ROM_QSTR(MP_QSTR_SLEEP), MP_ROM_INT(CH32_WAKE_SLEEP) }, \
+    { MP_ROM_QSTR(MP_QSTR_DEEPSLEEP), MP_ROM_INT(CH32_WAKE_DEEPSLEEP) }, \
     { MP_ROM_QSTR(MP_QSTR_dht_readinto), MP_ROM_PTR(&dht_readinto_obj) },

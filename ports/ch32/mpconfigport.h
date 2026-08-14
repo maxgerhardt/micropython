@@ -104,6 +104,10 @@ void *ch32_commit_exec(void *buf, size_t len, void *reloc);
  * it. Both need the microsecond timebase to survive a critical section. */
 #define MICROPY_PY_MACHINE_PULSE        (1)
 
+/* machine.bitstream(), which is what the frozen neopixel driver drives WS2812
+ * strips with. The timed pin loop is ports/ch32/machine_bitstream.c. */
+#define MICROPY_PY_MACHINE_BITSTREAM    (1)
+
 /* I2C. The hardware peripheral lives in ports/ch32/machine_i2c.c; SoftI2C
  * comes from extmod and bit-bangs any two pins, which is the fallback for the
  * pin pairs the I2C mux cannot reach. */
