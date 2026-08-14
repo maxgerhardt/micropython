@@ -129,6 +129,8 @@ const char *ch32_timer_owner_name(uint8_t owner) {
             return "Counter";
         case CH32_TIMER_ENCODER:
             return "Encoder";
+        case CH32_TIMER_AUDIO:
+            return "AudioOut";
         default:
             return "nothing";
     }

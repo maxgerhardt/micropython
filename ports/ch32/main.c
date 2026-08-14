@@ -49,6 +49,7 @@ void machine_uart_deinit_all(void);
 
 /* Defined in machine_sdcard.c; nothing else in the port needs its type. */
 void machine_sdcard_deinit_all(void);
+void machine_audioout_deinit_all(void);
 #include "machine_timer.h"
 #include "machine_wdt.h"
 #include "mphalport.h"
@@ -277,6 +278,10 @@ int main(void) {
         /* And the card, whose object is about to be freed while the
          * controller would otherwise still be clocking a selected card. */
         machine_sdcard_deinit_all();
+
+        /* And the audio output, which is a timer, a DMA channel and two
+         * analog pins that would otherwise keep converting a freed buffer. */
+        machine_audioout_deinit_all();
 
         /* Same for the analog outputs, which otherwise hold their last voltage
          * indefinitely. */

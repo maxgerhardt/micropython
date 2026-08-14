@@ -155,6 +155,7 @@ SRC_C += \
 	machine_encoder.c \
 	machine_touchpad.c \
 	machine_sdcard.c \
+	machine_audioout.c \
 	machine_vio18.c \
 	machine_i2c.c \
 	machine_spi.c \

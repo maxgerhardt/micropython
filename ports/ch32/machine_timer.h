@@ -23,6 +23,7 @@ enum {
     CH32_TIMER_TIMER,
     CH32_TIMER_COUNTER,
     CH32_TIMER_ENCODER,
+    CH32_TIMER_AUDIO,
 };
 
 /* Take timer `id` (1-12) for `owner`. False if someone else already has it;
@@ -37,7 +38,7 @@ void ch32_timer_release(uint8_t id, uint8_t owner);
 uint8_t ch32_timer_owner(uint8_t id);
 
 /* The name of an owner, for error messages: "PWM", "Timer", "Counter",
- * "Encoder". */
+ * "Encoder", "AudioOut". */
 const char *ch32_timer_owner_name(uint8_t owner);
 
 /* Stop every running timer and forget its callback.

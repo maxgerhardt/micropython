@@ -21,6 +21,7 @@ extern const mp_obj_type_t machine_counter_type;
 extern const mp_obj_type_t machine_encoder_type;
 extern const mp_obj_type_t machine_touchpad_type;
 extern const mp_obj_type_t machine_sdcard_type;
+extern const mp_obj_type_t machine_audioout_type;
 #include "machine_sleep.h"
 #include "machine_vio18.h"
 #include "machine_wdt.h"
@@ -118,6 +119,7 @@ enum {
     { MP_ROM_QSTR(MP_QSTR_Encoder), MP_ROM_PTR(&machine_encoder_type) }, \
     { MP_ROM_QSTR(MP_QSTR_TouchPad), MP_ROM_PTR(&machine_touchpad_type) }, \
     { MP_ROM_QSTR(MP_QSTR_SDCard), MP_ROM_PTR(&machine_sdcard_type) }, \
+    { MP_ROM_QSTR(MP_QSTR_AudioOut), MP_ROM_PTR(&machine_audioout_type) }, \
     { MP_ROM_QSTR(MP_QSTR_vio18), MP_ROM_PTR(&machine_vio18_obj) }, \
     { MP_ROM_QSTR(MP_QSTR_PWRON_RESET), MP_ROM_INT(CH32_RESET_PWRON) }, \
     { MP_ROM_QSTR(MP_QSTR_HARD_RESET), MP_ROM_INT(CH32_RESET_HARD) }, \
