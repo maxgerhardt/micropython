@@ -193,12 +193,27 @@ static void can_init_pin(uint8_t pin, uint8_t af, uint32_t mode) {
     GPIO_PinAFConfig(machine_pin_gpio(pin), MACHINE_PIN_NUM(pin), af);
 }
 
-static void can_release_pin(uint8_t pin) {
+/* Park the pins so the transceiver sees an idle bus.
+ *
+ * TX is driven *high* rather than left floating, because high is recessive and
+ * a floating TXD input on the transceiver is not: SN65HVD230 and friends will
+ * happily hold CANH/CANL dominant from an undriven input, which jams the
+ * segment for every other node on it -- including the next program on this
+ * board, whose first transmission then fails for reasons that have nothing to
+ * do with it. RX becomes a plain pulled-up input for the same reason a CAN RX
+ * is pulled up at init: an unconnected pin should read recessive. */
+static void can_release_pin(uint8_t pin, bool is_tx) {
+    if (is_tx) {
+        GPIO_SetBits(machine_pin_gpio(pin), MACHINE_PIN_MASK(pin));
+    }
     GPIO_InitTypeDef init = { 0 };
-    init.GPIO_Mode = GPIO_Mode_IN_FLOATING;
+    init.GPIO_Mode = is_tx ? GPIO_Mode_Out_PP : GPIO_Mode_IPU;
     init.GPIO_Speed = GPIO_Speed_Very_High;
     init.GPIO_Pin = MACHINE_PIN_MASK(pin);
     GPIO_Init(machine_pin_gpio(pin), &init);
+    if (is_tx) {
+        GPIO_SetBits(machine_pin_gpio(pin), MACHINE_PIN_MASK(pin));
+    }
 }
 
 static inline CAN_TypeDef *can_regs(const machine_can_obj_t *self) {
@@ -290,11 +305,6 @@ static void machine_can_port_init(machine_can_obj_t *self) {
      * being used. The vendor's own init does the same. */
     RCC_HB1PeriphClockCmd(RCC_HB1Periph_CAN1, ENABLE);
 
-    /* TX push-pull, RX pulled up so an unconnected pin reads recessive rather
-     * than floating into a storm of framing errors. */
-    can_init_pin(hw->tx_pin, hw->af, GPIO_Mode_AF_PP);
-    can_init_pin(hw->rx_pin, hw->af, GPIO_Mode_IPU);
-
     CAN_TypeDef *regs = hw->regs;
 
     /* Master reset first, so a fresh CAN object really is fresh. TEC and REC
@@ -308,6 +318,19 @@ static void machine_can_port_init(machine_can_obj_t *self) {
      * controller's filters a few lines below; a second controller would need
      * its set_filters() calling again. Two controllers running at once, one of
      * them being re-initialised, is the only case that notices. */
+    /* An RCC peripheral reset, not just the CTLR one.
+     *
+     * CTLR's RESET bit is not enough on this silicon: once BTIMR has had LBKM
+     * or SILM set, the controller does not come back to driving its TX pad
+     * from a CTLR reset, however clean BTIMR reads afterwards. The symptom is
+     * that a controller which was once in loopback or silent mode can no
+     * longer acknowledge, so the *other* node on the bus goes error-passive
+     * with TEC at 128 and form errors while this one receives nothing. GPIO,
+     * AFIO and every CAN register read identically in the working and broken
+     * cases; only a hard reset cleared it. */
+    RCC_HB1PeriphResetCmd(hw->rcc_bit, ENABLE);
+    RCC_HB1PeriphResetCmd(hw->rcc_bit, DISABLE);
+
     regs->CTLR |= CAN_CTLR_RESET;
     while (regs->CTLR & CAN_CTLR_RESET) {
     }
@@ -343,6 +366,23 @@ static void machine_can_port_init(machine_can_obj_t *self) {
      * constructed CAN object that dropped every frame would be a trap. */
     machine_can_port_clear_filters(self);
     machine_can_port_set_filter_done(self);
+
+    /* Pins last, immediately before the controller starts.
+     *
+     * Not first, which is the obvious order and is wrong here: between the
+     * alternate function being selected and the peripheral being configured
+     * there is a master reset, and a resetting bxCAN does not hold its TX
+     * output recessive. The transceiver turns that into a dominant level on
+     * the wire, and on a live bus that is a corrupted frame for every other
+     * node -- CAN1 ends up error-passive with TEC at 128 and form errors,
+     * having never got an acknowledgement, purely because CAN3 was
+     * constructed next to it. Attaching the pad only once the controller is
+     * configured and about to leave init mode keeps the glitch off the bus.
+     *
+     * RX is pulled up so an unconnected pin reads recessive rather than
+     * floating into a storm of framing errors. */
+    can_init_pin(hw->tx_pin, hw->af, GPIO_Mode_AF_PP);
+    can_init_pin(hw->rx_pin, hw->af, GPIO_Mode_IPU);
 
     regs->CTLR &= ~CAN_CTLR_INRQ;
     if (!can_wait_bit(&regs->STATR, CAN_STATR_INAK, false)) {
@@ -384,8 +424,8 @@ static void machine_can_port_deinit(machine_can_obj_t *self) {
      * any more. */
     regs->CTLR |= CAN_CTLR_INRQ;
     can_wait_bit(&regs->STATR, CAN_STATR_INAK, true);
-    can_release_pin(hw->tx_pin);
-    can_release_pin(hw->rx_pin);
+    can_release_pin(hw->tx_pin, true);
+    can_release_pin(hw->rx_pin, false);
 
 }
 
@@ -428,6 +468,16 @@ static can_filter_regs_t can_filter_regs(const machine_can_obj_t *self, int filt
         r.fmcfgr = &CAN1->FMCFGR_CAN3;
         r.fafifor = &CAN1->FAFIFOR_CAN3;
         r.fwr = &CAN1->FWR_CAN3;
+        /* FSCFGR_CAN3 too, which the vendor's CAN_FilterInit() does *not* do:
+         * it switches the other three registers for banks past 27 and then
+         * writes the shifted bit into the plain FSCFGR, where it lands on a
+         * CAN1 bank instead. The consequence is that a CAN3 filter stays in
+         * 16-bit scale, and 16-bit scale reads FR1/FR2 as four half-registers
+         * -- so an all-zero accept-everything filter still works and any real
+         * (id, mask) pair matches nothing. On a two-node bus that shows up as
+         * CAN3 receiving unfiltered traffic happily and dropping every frame
+         * the moment set_filters() is called. */
+        r.fscfgr = &CAN1->FSCFGR_CAN3;
         /* Bank minus 27, not minus 28, and FSCFGR stays the *non*-CAN3
          * register while the other three switch. Both are what the vendor's
          * CAN_FilterInit() does, and neither is what the register names

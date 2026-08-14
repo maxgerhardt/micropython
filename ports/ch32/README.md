@@ -987,35 +987,42 @@ without the reset they carry across `deinit()`, across a new `CAN()` and across
 a soft reset. The cost: CAN1 owns the filter block, so re-initialising CAN1
 drops the filters of any other controller that is running.
 
-### What is verified, and what is not
+### Verified on a real bus
 
-`test_can.py` passes 33 checks in loopback: identifiers standard and extended,
-zero- and eight-byte payloads, all three mailboxes, filters and masks,
-interrupts, counters, and all three controllers.
-
-Loopback cannot check the **bit rate**, because transmitter and receiver share
-one clock and stay consistent whatever it is set to — a bit time built from the
-400 MHz core clock instead of the 100 MHz bus clock would look perfect. So the
-test times a burst instead: 888 µs a frame at 125 kbit/s and 234 µs at
-500 kbit/s, against 960 and 240 nominal for a 120-bit frame. That confirms the
-clock.
-
-What is **not** confirmed is that the pads are driving. In normal mode with no
-transceiver a frame should go unacknowledged and the transmit error counter
-should climb; instead it completes and comes back in the receive FIFO — and it
-still does with the RX pin taken back as a plain GPIO input, so the receiver is
-not being fed from the pad. Whether that is an internal loopback default or a
-wrong AF cannot be told apart from inside.
-
-Two nodes settle it, and the board has the pins for it. With two 3.3 V
-transceivers (VP230 or similar):
+`test_can.py` passes 52 checks. Most run in loopback and need nothing attached;
+the last section wants two nodes and skips cleanly without them:
 
     CAN1: PB7 -> TXD, PB6 <- RXD    on transceiver A
     CAN3: PC5 -> TXD, PC4 <- RXD    on transceiver B
     A CANH - B CANH, A CANL - B CANL, 120 ohm at each end
 
-then send from `CAN(1)` in `MODE_NORMAL` and receive on `CAN(3)`. That proves
-the pins, the alternate functions, the transceivers and the bit rate at once.
+With two SN65HVD230 modules wired that way, frames cross in both directions at
+**125 k, 250 k, 500 k, 800 k and 1 Mbit/s with zero errors**, including
+extended identifiers, eight-byte payloads, receive filters and the receive
+interrupt. That confirms the pins, the alternate functions and the bit timing
+together — two independent controllers have to agree on the sample point or
+nothing gets through at all.
+
+Loopback on its own cannot check the bit rate, because transmitter and receiver
+share one clock and stay consistent whatever it is set to. The loopback section
+times a burst instead: 888 µs a frame at 125 kbit/s and 240 µs at 500 kbit/s
+against 960 and 240 nominal for a 120-bit frame.
+
+### Two things that only a real bus revealed
+
+**A controller that has been in loopback or silent mode does not come back from
+a `CTLR` reset.** It stops driving its TX pad, so it can no longer acknowledge,
+and the *other* node goes error-passive with TEC at 128 and form errors while
+this one receives nothing. Every register reads identically in the working and
+broken cases — GPIO, AFIO, `BTIMR` with `LBKM`/`SILM` clear — and only a hard
+reset cleared it. `init()` therefore does an **RCC peripheral reset** before
+the `CTLR` one.
+
+**A CAN TX pin must be parked driving high, not floating.** `SN65HVD230` and
+friends will hold CANH/CANL dominant from an undriven input, which jams the
+whole segment — including for the next program on this board, whose first
+transmission then fails for reasons that have nothing to do with it. `deinit()`
+drives TX recessive rather than releasing it.
 
 ## RTC alarms
 

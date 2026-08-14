@@ -195,27 +195,97 @@ try:
 except ValueError:
     check("CAN(4) rejected", True)
 
-# --- normal mode with nothing on the bus.
+# --- normal mode with nobody to answer.
 #
-# This does not do what a bxCAN datasheet would lead you to expect. With no
-# transceiver and no second node there is nobody to acknowledge, so the frame
-# should be retransmitted forever and the transmit error counter should climb.
-# Instead it completes, is acknowledged, and comes back in the receive FIFO --
-# and it still does with the RX pin taken back as a plain GPIO input, which
-# means the receiver is not being fed from the pad at all.
-#
-# So this pins down what the silicon actually does rather than what it ought
-# to: no error, and the controller stays error-active. Whether the pads are
-# driving at all is the one thing loopback and a single node cannot answer;
-# the two-node wiring in README.md settles it.
+# One node on a bus, or a node with no transceiver at all: nothing
+# acknowledges, so the frame is retransmitted forever and the transmit error
+# counter climbs until the controller goes error-passive at 128. Textbook CAN,
+# and worth pinning down because it is also what a wrong pin assignment or a
+# dead transceiver looks like -- and because it did *not* behave this way until
+# the RCC peripheral reset went into init(): a controller that had once been in
+# loopback or silent mode would quietly acknowledge its own traffic instead.
 c = machine.CAN(1, bitrate=125000, mode=machine.CAN.MODE_NORMAL)
 c.send(0x123, bytes([1]))
 time.sleep_ms(50)
 counters = c.get_counters()
-print("normal mode, no bus:", counters, "state", c.state())
-check("no transmit errors", counters[0] == 0)
-check("controller stays error-active", c.state() == machine.CAN.STATE_ACTIVE)
-check("frame did not stay stuck in a mailbox", counters[5] == 0)
+print("normal mode, nobody listening:", counters, "state", c.state())
+check("transmit errors accumulate", counters[0] > 0)
+check("frame is still pending", counters[5] > 0)
+check("nothing was received", counters[6] == 0)
 c.deinit()
+
+# --- a real bus, if one is wired.
+#
+# CAN1 on PB7/PB6 and CAN3 on PC5/PC4, each to a 3.3 V transceiver, CANH to
+# CANH and CANL to CANL with 120 ohm at each end. See README.md.
+#
+# This is the only thing that can check the bit timing against another
+# controller rather than against itself, and the only thing that proves the
+# pads drive at all. Everything above passes without it, so the section skips
+# cleanly when nothing is connected.
+a = machine.CAN(1, bitrate=500000, mode=machine.CAN.MODE_NORMAL)
+b = machine.CAN(3, bitrate=500000, mode=machine.CAN.MODE_NORMAL)
+a.send(0x100, b"\xaa\x55")
+probe = drain(b, 300)
+
+if probe is None:
+    print("  SKIP  two-node bus -- nothing received on CAN3, is it wired?")
+    a.deinit()
+    b.deinit()
+else:
+    check("bus: frame crosses to the other controller", probe[0] == 0x100)
+    check("bus: payload survives", bytes(probe[1]) == b"\xaa\x55")
+
+    # Back the other way, so both transmitters and both receivers are covered.
+    b.send(0x321, b"wxyz")
+    m = drain(a)
+    check("bus: reverse direction", m is not None and m[0] == 0x321)
+
+    check("bus: no transmit errors", a.get_counters()[0] == 0 and b.get_counters()[0] == 0)
+    check("bus: no receive errors", a.get_counters()[1] == 0 and b.get_counters()[1] == 0)
+
+    a.send(0x1ABCDEF, b"12345678", flags=machine.CAN.FLAG_EXT_ID)
+    m = drain(b)
+    check(
+        "bus: extended id and eight bytes",
+        m is not None and m[0] == 0x1ABCDEF and bytes(m[1]) == b"12345678",
+    )
+
+    # A filter on the receiver. This is what caught CAN3 taking its filter
+    # scale from the wrong register: an accept-everything filter still worked,
+    # and any real (id, mask) pair matched nothing.
+    b.set_filters([(0x200, 0x7FF, 0)])
+    a.send(0x200, b"\x01")
+    check("bus: filter accepts a match", drain(b) is not None)
+    a.send(0x201, b"\x02")
+    check("bus: filter rejects the rest", drain(b, 200) is None)
+    b.set_filters([])
+
+    seen = []
+    b.irq(handler=lambda o: seen.append(o.irq().flags()), trigger=machine.CAN.IRQ_RX)
+    a.send(0x300, b"\xff")
+    t0 = time.ticks_ms()
+    while not seen and time.ticks_diff(time.ticks_ms(), t0) < 500:
+        pass
+    check("bus: receive interrupt", len(seen) > 0 and (seen[0] & machine.CAN.IRQ_RX))
+    b.irq(handler=None, trigger=0)
+    drain(b)
+    a.deinit()
+    b.deinit()
+
+    # Every standard bit rate, both controllers agreeing on the sample point.
+    # Nothing gets through at all if the bit time is wrong, which makes this a
+    # far stronger check than the loopback burst above.
+    for rate in (125000, 250000, 500000, 800000, 1000000):
+        a = machine.CAN(1, bitrate=rate, mode=machine.CAN.MODE_NORMAL)
+        b = machine.CAN(3, bitrate=rate, mode=machine.CAN.MODE_NORMAL)
+        a.send(0x100, b"\xaa\x55")
+        m = drain(b)
+        ok = m is not None and m[0] == 0x100 and bytes(m[1]) == b"\xaa\x55"
+        print("  %7d bit/s %s" % (rate, "ok" if ok else "FAILED"))
+        check("bus at %d bit/s" % rate, ok)
+        check("bus at %d bit/s is error free" % rate, a.get_counters()[0] == 0)
+        a.deinit()
+        b.deinit()
 
 print("%u passed, %u failed" % (passed, failed))
