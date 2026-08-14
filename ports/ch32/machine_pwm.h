@@ -19,4 +19,17 @@
  */
 void machine_pwm_deinit_all(void);
 
+/* Look a pin up in the PWM alternate-function table.
+ *
+ * machine_encoder.c uses these: quadrature decoding takes TI1 and TI2, the
+ * same pads and alternate functions a PWM output would use, so there is no
+ * reason for a second table. Negated pins are refused -- TIMx_CHyN is an
+ * output of the complementary generator with no input path.
+ *
+ * machine_pwm_channel_af() answers "can this pin be that timer's channel, and
+ * with which AF"; machine_pwm_channel_pin() gives the first pin listed for a
+ * channel, for a default. */
+bool machine_pwm_channel_af(uint8_t pin, uint8_t timer, uint8_t channel, uint8_t *af);
+bool machine_pwm_channel_pin(uint8_t timer, uint8_t channel, uint8_t *pin);
+
 #endif // MICROPY_INCLUDED_CH32_MACHINE_PWM_H

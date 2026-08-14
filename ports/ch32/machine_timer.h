@@ -7,10 +7,10 @@
 
 /* Who owns each of the twelve timers.
  *
- * Three things want them and only one can have each: machine.PWM drives the
- * compare channels, machine.Timer drives the update event, and
- * machine.Counter clocks the counter from a pin. All three set the period, so
- * none can share with another.
+ * Four things want them and only one can have each: machine.PWM drives the
+ * compare channels, machine.Timer drives the update event, machine.Counter
+ * clocks the counter from a pin, and machine.Encoder decodes quadrature into
+ * it. All of them set the period, so none can share with another.
  *
  * The table lives in machine_timer.c because that is an ordinary translation
  * unit; machine_pwm.c and machine_counter.c are pasted into their extmod hosts
@@ -22,6 +22,7 @@ enum {
     CH32_TIMER_PWM,
     CH32_TIMER_TIMER,
     CH32_TIMER_COUNTER,
+    CH32_TIMER_ENCODER,
 };
 
 /* Take timer `id` (1-12) for `owner`. False if someone else already has it;
@@ -35,7 +36,8 @@ void ch32_timer_release(uint8_t id, uint8_t owner);
 /* CH32_TIMER_FREE, or one of the owners above. */
 uint8_t ch32_timer_owner(uint8_t id);
 
-/* The name of an owner, for error messages: "PWM", "Timer", "Counter". */
+/* The name of an owner, for error messages: "PWM", "Timer", "Counter",
+ * "Encoder". */
 const char *ch32_timer_owner_name(uint8_t owner);
 
 /* Stop every running timer and forget its callback.

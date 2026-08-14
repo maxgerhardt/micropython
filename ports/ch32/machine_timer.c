@@ -36,6 +36,7 @@
 
 #include "irq.h"
 #include "machine_counter.h"
+#include "machine_encoder.h"
 #include "machine_timer.h"
 
 #define TIMER_MIN (1)
@@ -126,6 +127,8 @@ const char *ch32_timer_owner_name(uint8_t owner) {
             return "Timer";
         case CH32_TIMER_COUNTER:
             return "Counter";
+        case CH32_TIMER_ENCODER:
+            return "Encoder";
         default:
             return "nothing";
     }
@@ -257,7 +260,7 @@ static void machine_timer_isr(uint8_t id) {
     /* The vectors are per timer, not per driver, so a Counter's wrap arrives
      * here too. It owns the timer exclusively, so if it takes the interrupt
      * there is no Timer to consider. */
-    if (machine_counter_irq(id)) {
+    if (machine_counter_irq(id) || machine_encoder_irq(id)) {
         return;
     }
 

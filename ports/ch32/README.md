@@ -1100,17 +1100,55 @@ the order — `Counter()` reconfigures the pin as a floating input, so a
 viper loop writing the wrong one toggles nothing, counts nothing, and looks
 exactly like a broken ETR.
 
+## Quadrature encoders
+
+`machine.Encoder` decodes quadrature in the timer's **encoder mode**, a slave
+mode where TI1 and TI2 drive the counter up or down according to which phase
+led. It is entirely in hardware, so a fast encoder costs nothing and cannot be
+missed by a busy interpreter:
+
+    e = machine.Encoder(3)                          # PA6 and PA7
+    e = machine.Encoder(3, phases=2)
+    e = machine.Encoder(3, machine.Pin("PA6"), machine.Pin("PA7"))
+    e.value()        # signed position
+    e.value(0)       # zero it
+
+Phase pins are the timer's channel 1 and channel 2 inputs — the same pads and
+alternate functions a PWM output would use, pointed the other way — so they come
+from the PWM table rather than a second list of their own. `Encoder(3)` defaults
+to **PA6/PA7**, both in the 3.3 V domain. TIM6 and TIM7 have no capture channels
+and are refused.
+
+`phases=4` (the default here) counts every edge of both inputs; `phases=2`
+counts one input's edges. The documented default elsewhere is 1 phase, which
+this hardware has no mode for, so it is rejected rather than quietly giving four
+times the count.
+
+Winding forward and back returns to the starting value, including across the
+16-bit wrap: the update interrupt reads the direction bit *at the moment of the
+wrap* rather than assuming, so reversing past the top does not lose 65536.
+
+Testing needs no wiring, the same as `machine.Counter`: driving PA6 and PA7
+through a quadrature sequence as GPIO outputs is decoded exactly as a real
+encoder would be. `Encoder()` reconfigures both pins as floating inputs, so the
+`Pin(OUT)` pair has to come *after* it.
+
 ### Sharing the timers with PWM
 
-`machine.PWM` claims timer *channels*; `machine.Timer` claims a whole timer,
-because it drives the update event and so owns the period. Neither may take one
-the other holds, and they arbitrate by asking each other — `machine_pwm.c` is
-pasted into `extmod/machine_pwm.c` and is static throughout, so there is no
-table to share. Each side exports one predicate, `machine_pwm_timer_in_use()`
-and `machine_timer_owns()`.
+Four things want the twelve timers: `machine.PWM` drives the compare channels,
+`machine.Timer` the update event, `machine.Counter` clocks the counter from a
+pin, and `machine.Encoder` decodes quadrature into it. All of them set the
+period, so no two can share one.
 
-Asking for a specific timer that the other side owns raises `ValueError`;
-letting either allocate simply picks something else.
+A claim table in `machine_timer.c` arbitrates. It lives there because that is
+the only one of the four that is an ordinary translation unit — the others are
+pasted into their extmod hosts and are static throughout, so none of them can
+hold state the rest can reach. PWM claims when its first channel goes up and
+releases when its last comes down.
+
+Asking for a timer somebody else holds raises `ValueError` naming the holder
+(`timer 3 is held by Encoder`); letting `Timer(-1)` allocate simply picks
+something else.
 
 ## RTC alarms
 

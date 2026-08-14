@@ -585,6 +585,38 @@ static void machine_pwm_release(machine_pwm_obj_t *self) {
     self->timer = 0;
 }
 
+/* Where a pin can be a given timer's capture/compare input.
+ *
+ * Exported so machine_encoder.c can reuse this table rather than inventing a
+ * second one: quadrature decoding takes TI1 and TI2, which are the same pads
+ * and the same alternate functions a PWM output would use, only pointed the
+ * other way. Negated pins (TIMx_CHyN) are refused -- they are outputs of the
+ * complementary generator and have no input path.
+ */
+bool machine_pwm_channel_af(uint8_t pin, uint8_t timer, uint8_t channel, uint8_t *af) {
+    for (size_t i = 0; i < MP_ARRAY_SIZE(machine_pwm_af_options); i++) {
+        const machine_pwm_af_t *opt = &machine_pwm_af_options[i];
+        if (opt->pin == pin && opt->timer == timer && opt->channel == channel && !opt->negated) {
+            *af = opt->af;
+            return true;
+        }
+    }
+    return false;
+}
+
+/* The first pin listed for a timer's channel, for a port that wants a sensible
+ * default rather than making the caller name both phases. */
+bool machine_pwm_channel_pin(uint8_t timer, uint8_t channel, uint8_t *pin) {
+    for (size_t i = 0; i < MP_ARRAY_SIZE(machine_pwm_af_options); i++) {
+        const machine_pwm_af_t *opt = &machine_pwm_af_options[i];
+        if (opt->timer == timer && opt->channel == channel && !opt->negated) {
+            *pin = opt->pin;
+            return true;
+        }
+    }
+    return false;
+}
+
 void machine_pwm_deinit_all(void) {
     for (uint8_t timer = 1; timer <= PWM_TIMER_MAX; timer++) {
         machine_pwm_timer_t *state = &machine_pwm_timers[timer - 1];
