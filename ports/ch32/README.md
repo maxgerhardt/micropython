@@ -1197,21 +1197,38 @@ card protocol.
 
 Measured on a 16 GB SDHC card, 64 KB sequential, 1-bit:
 
-| SDCLK | write | read |
-|---|---|---|
-| 390 kHz | 46 KB/s | 48 KB/s |
-| 2.1 MHz | 237 KB/s | 253 KB/s |
-| 20 MHz | 1509 KB/s | 2176 KB/s |
-| 25 MHz | 1628 KB/s | 2646 KB/s |
-| 50 MHz | 2117 KB/s | 4653 KB/s |
+| SDCLK | read |
+|---|---|
+| 390 kHz | 48 KB/s |
+| 2.1 MHz | 253 KB/s |
+| 20 MHz | 2180 KB/s |
+| 25 MHz | 2650 KB/s |
+| 30.8 MHz | 3165 KB/s |
+| 50 MHz | 4680 KB/s |
+
+**Only reads are a bus measurement.** Writes on this card run anywhere between
+470 and 2230 KB/s with no relationship to SDCLK at all — 50 MHz produced 544
+and 526 KB/s in consecutive passes while 25 MHz produced 490 and 1616 — because
+what dominates a write is the card's own programming and erase-block handling,
+not the clock. A write-speed column in this table would be measuring the card.
 
 SDCLK is `SYSPLL / div` in high-speed mode and `SYSPLL / div / 64` in low-speed
 mode with `div` in 2…31, so the achievable rates are quantised and the two
 ranges do not meet — at a 400 MHz SYSPLL low mode stops at 3.1 MHz and high mode
-starts at 12.9 MHz. `freq` picks whichever range can reach the request; the
-object's `repr` reports what was actually programmed. 50 MHz worked on this
-card but is past the 25 MHz default-speed limit, which properly needs a CMD6
-switch into high-speed mode that this driver does not do.
+starts at 12.9 MHz. `freq` picks whichever range can reach the request, and the
+object's `repr` reports what was actually programmed.
+
+Above 25 MHz the card is switched into high-speed mode with CMD6 first, which
+is what makes those clocks legal — default speed stops at 25 MHz. The switch is
+skipped below that, where it buys nothing, and a card that will not switch is
+held at 25 MHz rather than clocked past its rating and hoped for. `repr` says
+`high-speed` when the switch took:
+
+    >>> machine.SDCard(freq=50000000)
+    SDCard(SDHC, 30535680 blocks, width=1, freq=50000000, high-speed)
+
+50 MHz is the ceiling. Past it is UHS-I, which needs 1.8 V signalling and a
+CMD11 voltage switch, so `freq` rejects anything higher.
 
 Four things about this controller cost real time, and none are guessable:
 

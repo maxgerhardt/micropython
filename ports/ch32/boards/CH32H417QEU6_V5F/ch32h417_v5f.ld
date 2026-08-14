@@ -43,11 +43,17 @@ MEMORY
 	/* Same reason as USB_RAM: the Ethernet DMA is on the system bus and cannot
 	   reach DTCM either. Descriptors and MAC frame buffers live here. */
 	ETH_RAM (xrw)  : ORIGIN = 0x20160000, LENGTH = 32K
-	/* The rest of the shared area, out to its end at 0x20180000. Nothing had
-	   claimed it, so it goes to the GC as a second heap area -- see
+	/* The SDMMC bounce buffers, two runs of eight blocks. Its own region
+	   rather than a corner of RAM_CODE, which has no room for it: the generic
+	   toolchain emits ~15K more and overflowed by 128 bytes with these here.
+	   The address itself does not matter to the DMA -- it reads and writes
+	   RAM_CODE, ETH_RAM and this equally -- so this is only about space. */
+	SD_RAM (rw)    : ORIGIN = 0x20168000, LENGTH = 8K
+	/* The rest of the shared area, out to its end at 0x20180000. Nothing else
+	   had claimed it, so it goes to the GC as a second heap area -- see
 	   MICROPY_GC_SPLIT_HEAP and the gc_add() call in main.c. It takes the heap
-	   from the 162K that fits in DTCM to about 258K. */
-	HEAP2 (rw)     : ORIGIN = 0x20168000, LENGTH = 96K
+	   from the 162K that fits in DTCM to about 250K. */
+	HEAP2 (rw)     : ORIGIN = 0x2016A000, LENGTH = 88K
 	/* DTCM: zero-wait at the V5F core clock. Holds .data/.bss/stack/heap. */
 	RAM_LOAD (xrw) : ORIGIN = 0x200C0000, LENGTH = 256
 	RAM (xrw)      : ORIGIN = (0x200C0000+256), LENGTH = (256K-256)
@@ -244,17 +250,16 @@ SECTIONS
 		PROVIDE( _eethram = . );
 	} >ETH_RAM
 
-	/* The SDMMC bounce buffers, 8K of them. Outside .bss for the same reason
-	 * .usbram and .ethram are: that controller's DMA is on the system bus and
-	 * cannot see DTCM, where .bss lives. Unlike those two it can sit in
-	 * RAM_CODE, which has the room -- the DMA reads and writes here happily.
-	 * Nothing zeroes it and nothing needs to: every use fills it first. */
+	/* The SDMMC bounce buffers. Outside .bss for the same reason .usbram and
+	 * .ethram are: that controller's DMA is on the system bus and cannot see
+	 * DTCM, where .bss lives. Nothing zeroes it and nothing needs to -- every
+	 * use fills it first. */
 	.sdmmcram (NOLOAD) :
 	{
 		. = ALIGN(16);
 		*(.sdmmcram .sdmmcram.*)
 		. = ALIGN(16);
-	} >RAM_CODE
+	} >SD_RAM
 
 	/* Second GC heap area, handed to gc_add() after every gc_init(). Nothing
 	 * is copied here at boot and nothing clears it: the GC writes its own area

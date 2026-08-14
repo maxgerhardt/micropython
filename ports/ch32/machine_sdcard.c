@@ -53,6 +53,9 @@
 
 #define SD_BLOCK_SIZE (512)
 
+/* CMD6 answers with a fixed 64-byte function status block. */
+#define SD_SWITCH_STATUS_SIZE (64)
+
 /* Pins of the default mapping, in the order the controller uses them. */
 #define SD_PIN_CK MACHINE_PIN_ID(2, 12)   /* PC12 */
 #define SD_PIN_CMD MACHINE_PIN_ID(3, 2)   /* PD2 */
@@ -66,6 +69,7 @@ enum {
     SD_CMD_GO_IDLE_STATE = 0,
     SD_CMD_ALL_SEND_CID = 2,
     SD_CMD_SEND_RELATIVE_ADDR = 3,
+    SD_CMD_SWITCH_FUNC = 6,
     SD_CMD_SELECT_CARD = 7,
     SD_CMD_SEND_IF_COND = 8,
     SD_CMD_SEND_CSD = 9,
@@ -112,6 +116,7 @@ typedef struct _machine_sdcard_obj_t {
     uint8_t width;
     uint8_t card_type;
     bool initialised;
+    bool high_speed;
     uint32_t cid[4];
     uint32_t csd[4];
 } machine_sdcard_obj_t;
@@ -363,6 +368,10 @@ static int sd_app_cmd(machine_sdcard_obj_t *self, uint8_t idx, uint32_t arg, uin
 
 /* --- card bring-up --- */
 
+/* Defined with the rest of the data path below, because it is a data
+ * transfer: CMD6 answers on the data lines, not in a response register. */
+static bool sd_try_high_speed(void);
+
 static uint32_t sd_capacity_blocks(const uint32_t csd[4]) {
     uint32_t structure = csd[0] >> 30;
     if (structure >= 1) {
@@ -484,6 +493,22 @@ static int sd_card_identify(machine_sdcard_obj_t *self) {
         return ret;
     }
 
+    /* Default speed stops at 25 MHz. Going faster is only legal once the
+     * card has been switched into high-speed mode with CMD6, and a card that
+     * will not switch has to be held at 25 MHz rather than clocked past its
+     * rating and hoped for -- which is what this driver did until now, and
+     * which happened to work on the card it was written against.
+     *
+     * The switch is skipped entirely below 25 MHz, where it buys nothing. */
+    self->high_speed = false;
+    if (self->freq > 25000000) {
+        if (sd_try_high_speed()) {
+            self->high_speed = true;
+        } else {
+            self->freq = 25000000;
+        }
+    }
+
     self->freq = sd_set_clock(self->freq);
     return 0;
 }
@@ -556,7 +581,7 @@ static uint32_t sd_blocks_done(void) {
  * The zero write to BLOCK_CFG is not idempotent configuration, it is the
  * reset of the block counter, and skipping it leaves a transfer inheriting
  * the previous one's state. */
-static void sd_arm(const uint8_t *buf, uint32_t nblocks, bool write) {
+static void sd_arm(const uint8_t *buf, uint32_t blocksize, uint32_t nblocks, bool write) {
     /* Order the memcpy that filled the buffer against the register writes
      * that hand it to another bus master. This was not what fixed the write
      * path -- adding it changed nothing -- but handing a buffer to a DMA
@@ -564,7 +589,7 @@ static void sd_arm(const uint8_t *buf, uint32_t nblocks, bool write) {
     __asm volatile ("fence" ::: "memory");
     SDMMC->BLOCK_CFG = 0;
     SDMMC->TRAN_MODE = write ? SDMMC_DMA_DIR : 0;
-    SDMMC->BLOCK_CFG = (SD_BLOCK_SIZE << 16) | nblocks;
+    SDMMC->BLOCK_CFG = (blocksize << 16) | nblocks;
     SDMMC->DMA_BEG1 = (uint32_t)buf;
 }
 
@@ -629,6 +654,66 @@ static int sd_write_data(uint32_t nblocks) {
     return 0;
 }
 
+/* CMD6, SWITCH_FUNC. The card answers with a 64-byte status block on the data
+ * lines rather than in a response register, so this is a data transfer with an
+ * unusual block size -- hence sd_arm() taking one.
+ *
+ * The 512 bits are numbered from 511 at the first bit on the wire, so bit n
+ * lives in byte (511 - n) / 8 at bit position n % 8. The two fields that
+ * matter here work out as:
+ *
+ *   bits 415:400  functions group 1 supports -> bytes 12:13, so high speed
+ *                 (function 1) is status[13] bit 1
+ *   bits 379:376  function group 1 actually selected -> status[16] low nibble,
+ *                 which reads back 0xF when the card declined
+ */
+static int sd_switch_func(uint32_t arg, uint8_t *status) {
+    int ret = sd_wait_dat0();
+    if (ret != 0) {
+        return ret;
+    }
+    SDMMC->INT_FG = 0xFFFF;
+
+    uint8_t *dma = sd_dma_buf[sd_dma_half];
+    sd_dma_half ^= 1;
+    sd_arm(dma, SD_SWITCH_STATUS_SIZE, 1, false);
+    ret = sd_cmd_r1(SD_CMD_SWITCH_FUNC, arg, SD_RESP_R1);
+    if (ret != 0) {
+        return ret;
+    }
+    ret = sd_read_data(1);
+    if (ret != 0) {
+        return ret;
+    }
+    memcpy(status, dma, SD_SWITCH_STATUS_SIZE);
+    return 0;
+}
+
+/* Ask group 1 for function 1, high speed. Mode 0 in bit 31 queries without
+ * changing anything and mode 1 commits; the 0xF nibbles leave the other five
+ * function groups alone. Returns false for every kind of "no", including a
+ * card too old to know CMD6 at all, and the caller then stays at 25 MHz. */
+static bool sd_try_high_speed(void) {
+    uint8_t status[SD_SWITCH_STATUS_SIZE];
+
+    if (sd_switch_func(0x00FFFFF1, status) != 0) {
+        return false;
+    }
+    if (!(status[13] & 0x02)) {
+        return false;
+    }
+    if (sd_switch_func(0x80FFFFF1, status) != 0) {
+        return false;
+    }
+    if ((status[16] & 0x0F) != 1) {
+        return false;
+    }
+    /* The card needs eight clocks at the old rate to finish adopting the new
+     * timing before the clock changes under it. */
+    sd_cmd_gap();
+    return true;
+}
+
 /* One contiguous run of blocks, straight into or out of `buf`, which has
  * already been checked to be somewhere the DMA can reach. */
 static int sd_transfer_dma(machine_sdcard_obj_t *self, uint32_t block,
@@ -650,10 +735,10 @@ static int sd_transfer_dma(machine_sdcard_obj_t *self, uint32_t block,
         if (ret != 0) {
             return ret;
         }
-        sd_arm(buf, nblocks, true);
+        sd_arm(buf, SD_BLOCK_SIZE, nblocks, true);
         ret = sd_write_data(nblocks);
     } else {
-        sd_arm(buf, nblocks, false);
+        sd_arm(buf, SD_BLOCK_SIZE, nblocks, false);
         ret = sd_cmd_r1(nblocks == 1 ? SD_CMD_READ_SINGLE_BLOCK : SD_CMD_READ_MULTIPLE_BLOCK,
             addr, SD_RESP_R1);
         if (ret != 0) {
@@ -773,6 +858,11 @@ static mp_obj_t machine_sdcard_make_new(const mp_obj_type_t *type,
     if (args[ARG_freq].u_int < 100000) {
         mp_raise_ValueError(MP_ERROR_TEXT("freq is too low to identify a card"));
     }
+    if (args[ARG_freq].u_int > 50000000) {
+        /* 50 MHz is where SD high speed stops. Past it needs UHS-I, which
+         * needs 1.8 V signalling, which needs CMD11 and a voltage switch. */
+        mp_raise_ValueError(MP_ERROR_TEXT("freq above 50MHz needs UHS-I"));
+    }
     if (ch32_vio18_get() < CH32_VIO18_2V5) {
         /* Every SDMMC pin is on VIO18. Below 2.5 V a 3.3 V card reads the
          * clock and command lines as permanently low and nothing responds --
@@ -821,9 +911,10 @@ static void machine_sdcard_print(const mp_print_t *print, mp_obj_t self_in, mp_p
         mp_printf(print, "SDCard(deinit)");
         return;
     }
-    mp_printf(print, "SDCard(%s, %u blocks, width=%u, freq=%u)",
+    mp_printf(print, "SDCard(%s, %u blocks, width=%u, freq=%u%s)",
         self->card_type == SD_CARD_SDHC ? "SDHC" : "SDSC",
-        (unsigned int)self->block_count, self->width, (unsigned int)self->freq);
+        (unsigned int)self->block_count, self->width, (unsigned int)self->freq,
+        self->high_speed ? ", high-speed" : "");
 }
 
 static mp_obj_t machine_sdcard_info(mp_obj_t self_in) {

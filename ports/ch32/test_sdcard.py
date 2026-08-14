@@ -213,6 +213,32 @@ if sd is not None:
         sd.readblocks(last, after)
         check("last block survived the rewrite", after == orig)
 
+    # --- high speed, via CMD6.
+    #
+    # Default speed stops at 25 MHz, so anything faster has to switch the card
+    # into high-speed mode first. Below that the switch is skipped, which is
+    # visible in the repr: it says "high-speed" only when it actually
+    # happened.
+    slow = machine.SDCard(freq=20000000)
+    check("no high-speed switch at 20 MHz", "high-speed" not in repr(slow))
+    check("20 MHz is programmed as asked", "freq=20000000" in repr(slow))
+    ref = bytearray(BLOCK)
+    slow.readblocks(0, ref)
+    slow.deinit()
+
+    fast = machine.SDCard(freq=50000000)
+    print(" ", fast)
+    check("high-speed switch at 50 MHz", "high-speed" in repr(fast))
+    check("50 MHz is programmed", "freq=50000000" in repr(fast))
+    hs = bytearray(8 * BLOCK)
+    check("read 8 blocks in high speed", fast.readblocks(0, hs) == 0)
+    check("high-speed read matches the 20 MHz one", hs[:BLOCK] == ref)
+    raises("freq above 50 MHz is refused", ValueError, lambda: machine.SDCard(freq=80000000))
+    fast.deinit()
+
+    # Back to the default for the filesystem checks below.
+    sd = machine.SDCard()
+
     # --- as a filesystem.
     mounted = False
     try:
