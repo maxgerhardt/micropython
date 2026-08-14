@@ -30,6 +30,7 @@
 #include "py/runtime.h"
 
 #include "machine_pin.h"
+#include "machine_timer.h"
 #include "machine_pwm.h"
 
 #define PWM_DEFAULT_FREQ (1000)
@@ -520,6 +521,11 @@ static const machine_pwm_af_t *machine_pwm_choose(uint8_t pin, mp_int_t timer_re
         if (timer_req >= 0 && opt->timer != timer_req) {
             continue;
         }
+        /* A machine.Timer on this one owns the update event and therefore the
+         * period, which is exactly what a PWM channel needs to control. */
+        if (machine_timer_owns(opt->timer)) {
+            continue;
+        }
         machine_pwm_timer_t *state = &machine_pwm_timers[opt->timer - 1];
         uint8_t bit = 1u << (opt->channel - 1);
         if ((state->claimed & bit) && state->owner[opt->channel - 1] != pin) {
@@ -574,6 +580,13 @@ static void machine_pwm_release(machine_pwm_obj_t *self) {
         machine_pwm_clock_enable(self->timer, DISABLE);
     }
     self->timer = 0;
+}
+
+bool machine_pwm_timer_in_use(uint8_t timer) {
+    if (timer < 1 || timer > PWM_TIMER_MAX) {
+        return false;
+    }
+    return machine_pwm_timers[timer - 1].claimed != 0;
 }
 
 void machine_pwm_deinit_all(void) {

@@ -43,6 +43,7 @@ void machine_uart_deinit_all(void);
 #include "machine_pwm.h"
 #include "machine_mem_backup.h"
 #include "machine_rtc.h"
+#include "machine_timer.h"
 #include "machine_wdt.h"
 #include "mphalport.h"
 
@@ -254,6 +255,10 @@ int main(void) {
         #if MICROPY_PY_MACHINE_PWM
         machine_pwm_deinit_all();
         #endif
+
+        /* And the hardware timers, for the same reason as the pins: the
+         * counter keeps running and its callback is a heap object. */
+        machine_timer_deinit_all();
 
         /* Same for the analog outputs, which otherwise hold their last voltage
          * indefinitely. */

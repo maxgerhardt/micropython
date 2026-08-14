@@ -14,6 +14,7 @@
  * object here to be reachable from the module globals below. */
 #include "machine_dac.h"
 #include "machine_rtc.h"
+#include "machine_timer.h"
 #include "machine_sleep.h"
 #include "machine_wdt.h"
 
@@ -105,6 +106,7 @@ enum {
     { MP_ROM_QSTR(MP_QSTR_DAC), MP_ROM_PTR(&machine_dac_type) }, \
     { MP_ROM_QSTR(MP_QSTR_RTC), MP_ROM_PTR(&machine_rtc_type) }, \
     { MP_ROM_QSTR(MP_QSTR_WDT), MP_ROM_PTR(&machine_wdt_type) }, \
+    { MP_ROM_QSTR(MP_QSTR_Timer), MP_ROM_PTR(&machine_timer_type) }, \
     { MP_ROM_QSTR(MP_QSTR_PWRON_RESET), MP_ROM_INT(CH32_RESET_PWRON) }, \
     { MP_ROM_QSTR(MP_QSTR_HARD_RESET), MP_ROM_INT(CH32_RESET_HARD) }, \
     { MP_ROM_QSTR(MP_QSTR_WDT_RESET), MP_ROM_INT(CH32_RESET_WDT) }, \

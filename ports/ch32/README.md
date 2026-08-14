@@ -1024,6 +1024,48 @@ whole segment — including for the next program on this board, whose first
 transmission then fails for reasons that have nothing to do with it. `deinit()`
 drives TX recessive rather than releasing it.
 
+## Timers
+
+`machine.Timer` drives a real TIM, not a soft timer, so the period is exact and
+the callback comes from an interrupt:
+
+    t = machine.Timer(-1, freq=1000, callback=lambda t: ...)
+    t = machine.Timer(6, mode=machine.Timer.ONE_SHOT, period=250, callback=...)
+    t.counter()      # microseconds into the current period
+    t.deinit()
+
+`Timer(-1)` allocates and prefers **TIM6 and TIM7**, the two with no output
+channels at all, so a Timer there costs `machine.PWM` nothing; taking TIM3
+instead would silently remove four PWM outputs. `period` is in units of
+`1/tick_hz` (so milliseconds by default), `freq` is in Hz and accepts a float.
+The prescaler and reload are both 16-bit, which puts the range at roughly 1 µs
+to 43 s.
+
+Measured from a hard callback at 100 Hz, every gap is 10000 µs — no jitter at
+all. A **soft** callback goes through the scheduler and inherits its delays: a
+garbage collection during the same run turns those gaps into 45 µs and 26 ms.
+That is worth knowing before blaming the timer. `hard=True` runs the callback
+in the interrupt itself, where it must not allocate.
+
+A hard callback that raises is disabled and its exception handed to the main
+thread rather than printed on the spot. Printing from the interrupt goes
+through TinyUSB, which is not interrupt-safe, and a callback that raises every
+time repeats at the timer's rate: at 500 Hz that starved `tud_task()` until its
+event FIFO filled, `TU_ASSERT` executed an `ebreak`, and the board wedged in
+the SDK's weak `Break_Point_Handler` with no output at all.
+
+### Sharing the timers with PWM
+
+`machine.PWM` claims timer *channels*; `machine.Timer` claims a whole timer,
+because it drives the update event and so owns the period. Neither may take one
+the other holds, and they arbitrate by asking each other — `machine_pwm.c` is
+pasted into `extmod/machine_pwm.c` and is static throughout, so there is no
+table to share. Each side exports one predicate, `machine_pwm_timer_in_use()`
+and `machine_timer_owns()`.
+
+Asking for a specific timer that the other side owns raises `ValueError`;
+letting either allocate simply picks something else.
+
 ## RTC alarms
 
 One comparator, so one alarm, and it compares whole seconds against the same

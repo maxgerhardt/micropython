@@ -150,6 +150,7 @@ SRC_C += \
 	modch32.c \
 	machine_pin.c \
 	machine_bitstream.c \
+	machine_timer.c \
 	machine_i2c.c \
 	machine_spi.c \
 	machine_dac.c \
