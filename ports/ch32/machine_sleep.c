@@ -77,31 +77,15 @@ bool machine_sleep_deepsleep_flag_take(void) {
     return woke;
 }
 
-/* Arm the RTC alarm and route it out through EXTI, which is not optional: in
- * Stop the core and its interrupt controller are clock-gated, so a peripheral
- * interrupt cannot reach them, and EXTI -- which is not gated -- is what
- * restarts the clocks. RM 2.3.4 says so in as many words: "the external break
- * line 17 needs to be configured". Verified on hardware, awake, before being
- * relied on: an alarm does set EXTI->INTFR bit 17. */
+/* Arm the RTC alarm. The EXTI routing that makes this able to wake Stop --
+ * line 17, which is not clock-gated and is what restarts the clocks, RM 2.3.4
+ * -- now lives in machine_rtc_alarm_in(), so that an alarm armed from Python
+ * wakes the chip exactly as one armed here does. The handler is there too.
+ *
+ * Sleeping past the LPTIM ceiling therefore replaces any alarm the program had
+ * pending: there is one comparator and this takes it. */
 static bool rtc_alarm_arm_ms(uint32_t ms) {
-    uint32_t seconds = (ms + 999) / 1000;
-    if (!machine_rtc_alarm_in(seconds)) {
-        return false;
-    }
-    EXTI->RTENR |= EXTI_LINE_RTC_ALARM;
-    EXTI->INTFR = EXTI_LINE_RTC_ALARM;
-    EXTI->INTENR |= EXTI_LINE_RTC_ALARM;
-    NVIC_EnableIRQ(RTCAlarm_IRQn);
-    return true;
-}
-
-/* Exists only so the wake interrupt has somewhere to land: the core takes the
- * vector on the way out of Stop, and an unhandled one would trap instead of
- * returning to the instruction after the WFI. */
-void CH32_IRQ_HANDLER(RTCAlarm_IRQHandler);
-void RTCAlarm_IRQHandler(void) {
-    RTC_ClearITPendingBit(RTC_IT_ALR);
-    EXTI->INTFR = EXTI_LINE_RTC_ALARM;
+    return machine_rtc_alarm_in((ms + 999) / 1000);
 }
 
 /* --- the two entry points --- */

@@ -55,8 +55,10 @@
 #include "py/mperrno.h"
 #include "py/mphal.h"
 #include "py/runtime.h"
+#include "shared/runtime/mpirq.h"
 #include "shared/timeutils/timeutils.h"
 
+#include "irq.h"
 #include "machine_rtc.h"
 
 enum {
@@ -94,6 +96,20 @@ static const machine_rtc_obj_t machine_rtc_singleton = { { &machine_rtc_type } }
 /* Which source is running, or 0 if the clock has not been started. */
 static uint8_t machine_rtc_source;
 static uint32_t machine_rtc_hz;
+
+/* The alarm is EXTI line 17. Routing it there is not optional even while
+ * awake, because that is also what wakes the chip out of Stop -- see the
+ * comment on rtc_alarm_arm_at(). */
+#define EXTI_LINE_RTC_ALARM (1u << 17)
+
+/* Alarm state. There is one comparator, so there is one alarm.
+ *
+ * machine_rtc_alarm_period is the repeat interval in seconds, or 0 for a
+ * one-shot; the hardware cannot repeat, so the handler re-arms. Both are
+ * touched by the interrupt, hence volatile. */
+static volatile uint32_t machine_rtc_alarm_target;
+static volatile uint32_t machine_rtc_alarm_period;
+static volatile bool machine_rtc_alarm_armed;
 
 /* Read-modify-write BDCTLR and confirm it took. Returns false if it never does.
  *
@@ -315,14 +331,20 @@ bool machine_rtc_get(uint32_t *seconds, uint32_t *microseconds) {
     return true;
 }
 
-bool machine_rtc_alarm_in(uint32_t seconds) {
-    if (machine_rtc_source == 0 || seconds == 0) {
+/* Point the comparator at an absolute counter value and enable the interrupt.
+ *
+ * The EXTI routing here is what machine_sleep.c used to do for itself, and it
+ * belongs with the arming rather than beside one caller: in Stop the core and
+ * its interrupt controller are clock-gated, so a peripheral interrupt cannot
+ * reach them, and EXTI -- which is not gated -- is what restarts the clocks.
+ * RM 2.3.4 says so in as many words: "the external break line 17 needs to be
+ * configured". An alarm armed from Python must wake deepsleep() the same way
+ * one armed by lightsleep() does, and having one place that arms is the only
+ * way to be sure of that. */
+static bool rtc_alarm_arm_at(uint32_t target) {
+    if (machine_rtc_source == 0) {
         return false;
     }
-    /* The counter is unsigned and free-running, so an alarm that wraps past
-     * 2^32 still compares equal at the right moment -- no clamping needed. */
-    uint32_t target = RTC_GetCounter() + seconds;
-
     if (!machine_rtc_wait_write()) {
         return false;
     }
@@ -332,10 +354,33 @@ bool machine_rtc_alarm_in(uint32_t seconds) {
         return false;
     }
     RTC_ITConfig(RTC_IT_ALR, ENABLE);
-    return machine_rtc_wait_write();
+    if (!machine_rtc_wait_write()) {
+        return false;
+    }
+
+    EXTI->RTENR |= EXTI_LINE_RTC_ALARM;
+    EXTI->INTFR = EXTI_LINE_RTC_ALARM;
+    EXTI->INTENR |= EXTI_LINE_RTC_ALARM;
+    NVIC_EnableIRQ(RTCAlarm_IRQn);
+
+    machine_rtc_alarm_target = target;
+    machine_rtc_alarm_armed = true;
+    return true;
+}
+
+bool machine_rtc_alarm_in(uint32_t seconds) {
+    if (machine_rtc_source == 0 || seconds == 0) {
+        return false;
+    }
+    machine_rtc_alarm_period = 0;
+    /* The counter is unsigned and free-running, so an alarm that wraps past
+     * 2^32 still compares equal at the right moment -- no clamping needed. */
+    return rtc_alarm_arm_at(RTC_GetCounter() + seconds);
 }
 
 void machine_rtc_alarm_clear(void) {
+    machine_rtc_alarm_armed = false;
+    machine_rtc_alarm_period = 0;
     if (machine_rtc_source == 0) {
         return;
     }
@@ -345,6 +390,61 @@ void machine_rtc_alarm_clear(void) {
     RTC_ITConfig(RTC_IT_ALR, DISABLE);
     machine_rtc_wait_write();
     RTC_ClearFlag(RTC_FLAG_ALR);
+    EXTI->INTENR &= ~EXTI_LINE_RTC_ALARM;
+    EXTI->INTFR = EXTI_LINE_RTC_ALARM;
+}
+
+/* Seconds until the alarm, 0 if it has passed or none is armed. Unsigned
+ * subtraction, so a target that wrapped past 2^32 still gives the right
+ * distance. */
+static uint32_t rtc_alarm_left_seconds(void) {
+    if (!machine_rtc_alarm_armed || machine_rtc_source == 0) {
+        return 0;
+    }
+    uint32_t now = RTC_GetCounter();
+    uint32_t target = machine_rtc_alarm_target;
+    return (target - now) > 0x80000000u ? 0 : (target - now);
+}
+
+/* The alarm interrupt.
+ *
+ * This also lands on the way out of Stop, where machine_sleep.c relies on it
+ * existing at all: the core takes the vector as the clocks restart, and an
+ * unhandled one would trap instead of returning to the instruction after the
+ * WFI. It used to live there for exactly that reason and does no harm when no
+ * Python handler is registered. */
+void CH32_IRQ_HANDLER(RTCAlarm_IRQHandler);
+void RTCAlarm_IRQHandler(void) {
+    RTC_ClearITPendingBit(RTC_IT_ALR);
+    EXTI->INTFR = EXTI_LINE_RTC_ALARM;
+
+    if (machine_rtc_alarm_period != 0) {
+        /* Step the comparator on from the target rather than from the counter,
+         * so a repeating alarm does not drift by however long it took to get
+         * here. RTC_SetAlarm() has to wait on RTOFF, which is slow in an
+         * interrupt but is the only way this peripheral takes a write. */
+        uint32_t next = machine_rtc_alarm_target + machine_rtc_alarm_period;
+        if (machine_rtc_wait_write()) {
+            RTC_SetAlarm(next);
+            machine_rtc_alarm_target = next;
+        }
+    } else {
+        machine_rtc_alarm_armed = false;
+        RTC_ITConfig(RTC_IT_ALR, DISABLE);
+    }
+
+    mp_irq_obj_t *irq = MP_STATE_PORT(machine_rtc_irq_object);
+    if (irq != NULL && irq->handler != mp_const_none) {
+        mp_irq_handler(irq);
+    }
+}
+
+/* Called from the soft-reset path. The handler lives on the heap that is about
+ * to be reclaimed, so an alarm left armed would dispatch into freed memory the
+ * moment it fired. */
+void machine_rtc_irq_deinit(void) {
+    machine_rtc_alarm_clear();
+    MP_STATE_PORT(machine_rtc_irq_object) = NULL;
 }
 
 void machine_rtc_init_boot(void) {
@@ -473,6 +573,157 @@ static mp_obj_t machine_rtc_source_fn(mp_obj_t self_in) {
 }
 static MP_DEFINE_CONST_FUN_OBJ_1(machine_rtc_source_obj, machine_rtc_source_fn);
 
+/* --- alarm ---
+ *
+ * One comparator, so one alarm, and it compares whole seconds against the same
+ * counter time.time() reads. Everything below is that single fact worked
+ * through: ALARM0 is the only id, an interval in milliseconds rounds *up* to
+ * the next second so an alarm never fires early, and repeat is done by the
+ * handler re-arming because the hardware cannot.
+ *
+ * Note that lightsleep(ms) and deepsleep(ms) arm the same comparator once the
+ * requested time is past the ~26 s that LPTIM covers, so a sleep with a long
+ * timeout replaces a pending alarm. There is no second one to fall back on. */
+
+static void rtc_alarm_check_id(mp_int_t id) {
+    if (id != 0) {
+        /* ENODEV rather than ValueError, which is what the other ports raise
+         * for an alarm id the hardware does not have. */
+        mp_raise_OSError(MP_ENODEV);
+    }
+}
+
+// RTC.alarm(id, time, *, repeat=False)
+static mp_obj_t machine_rtc_alarm(size_t n_args, const mp_obj_t *pos_args, mp_map_t *kw_args) {
+    enum { ARG_alarm_id, ARG_time, ARG_repeat };
+    static const mp_arg_t allowed_args[] = {
+        { MP_QSTR_id,     MP_ARG_INT, {.u_int = 0} },
+        { MP_QSTR_time,   MP_ARG_OBJ, {.u_rom_obj = MP_ROM_NONE} },
+        { MP_QSTR_repeat, MP_ARG_KW_ONLY | MP_ARG_BOOL, {.u_bool = false} },
+    };
+    mp_arg_val_t args[MP_ARRAY_SIZE(allowed_args)];
+    mp_arg_parse_all(n_args - 1, pos_args + 1, kw_args, MP_ARRAY_SIZE(args), allowed_args, args);
+
+    rtc_alarm_check_id(args[ARG_alarm_id].u_int);
+    if (machine_rtc_source == 0) {
+        mp_raise_OSError(MP_EIO);
+    }
+
+    uint32_t target;
+    uint32_t period = 0;
+
+    if (mp_obj_is_type(args[ARG_time].u_obj, &mp_type_tuple)
+        || mp_obj_is_type(args[ARG_time].u_obj, &mp_type_list)) {
+        if (args[ARG_repeat].u_bool) {
+            mp_raise_ValueError(MP_ERROR_TEXT("repeat needs a millisecond interval"));
+        }
+        /* An absolute datetime, in the same 8-tuple layout as RTC.datetime().
+         * The counter already holds seconds since 2000-01-01, which is this
+         * port's epoch, so the conversion is the whole of the work. */
+        mp_obj_t *items;
+        mp_obj_get_array_fixed_n(args[ARG_time].u_obj, 8, &items);
+        target = timeutils_seconds_since_2000(
+            mp_obj_get_int(items[0]), mp_obj_get_int(items[1]), mp_obj_get_int(items[2]),
+            mp_obj_get_int(items[4]), mp_obj_get_int(items[5]), mp_obj_get_int(items[6]));
+        if ((target - RTC_GetCounter()) > 0x80000000u) {
+            mp_raise_ValueError(MP_ERROR_TEXT("alarm time is in the past"));
+        }
+    } else {
+        mp_int_t ms = mp_obj_get_int(args[ARG_time].u_obj);
+        if (ms <= 0) {
+            mp_raise_ValueError(MP_ERROR_TEXT("alarm time must be positive"));
+        }
+        /* Round up: this clock has no fraction of a second to offer, and an
+         * alarm that fires early is worse than one that fires late. */
+        uint32_t seconds = ((uint32_t)ms + 999) / 1000;
+        target = RTC_GetCounter() + seconds;
+        if (args[ARG_repeat].u_bool) {
+            period = seconds;
+        }
+    }
+
+    machine_rtc_alarm_period = period;
+    if (!rtc_alarm_arm_at(target)) {
+        machine_rtc_alarm_period = 0;
+        mp_raise_OSError(MP_EIO);
+    }
+    return mp_const_none;
+}
+static MP_DEFINE_CONST_FUN_OBJ_KW(machine_rtc_alarm_obj, 1, machine_rtc_alarm);
+
+// RTC.alarm_left(alarm_id=0) -- milliseconds, always a whole second's worth.
+static mp_obj_t machine_rtc_alarm_left(size_t n_args, const mp_obj_t *args) {
+    rtc_alarm_check_id(n_args > 1 ? mp_obj_get_int(args[1]) : 0);
+    return mp_obj_new_int_from_uint(rtc_alarm_left_seconds() * 1000u);
+}
+static MP_DEFINE_CONST_FUN_OBJ_VAR_BETWEEN(machine_rtc_alarm_left_obj, 1, 2, machine_rtc_alarm_left);
+
+// RTC.alarm_cancel(alarm_id=0)
+static mp_obj_t machine_rtc_alarm_cancel(size_t n_args, const mp_obj_t *args) {
+    rtc_alarm_check_id(n_args > 1 ? mp_obj_get_int(args[1]) : 0);
+    machine_rtc_alarm_clear();
+    return mp_const_none;
+}
+static MP_DEFINE_CONST_FUN_OBJ_VAR_BETWEEN(machine_rtc_alarm_cancel_obj, 1, 2, machine_rtc_alarm_cancel);
+
+/* irq.trigger(ms) re-arms as a repeating alarm, and irq.trigger(0) cancels,
+ * which is the convention the other ports with an RTC irq object follow. */
+static mp_uint_t machine_rtc_irq_trigger(mp_obj_t self_in, mp_uint_t new_trigger) {
+    (void)self_in;
+    if (new_trigger == 0) {
+        machine_rtc_alarm_clear();
+    } else {
+        uint32_t seconds = ((uint32_t)new_trigger + 999) / 1000;
+        machine_rtc_alarm_period = seconds;
+        if (!rtc_alarm_arm_at(RTC_GetCounter() + seconds)) {
+            machine_rtc_alarm_period = 0;
+            mp_raise_OSError(MP_EIO);
+        }
+    }
+    return 0;
+}
+
+static mp_uint_t machine_rtc_irq_info(mp_obj_t self_in, mp_uint_t info_type) {
+    (void)self_in;
+    if (info_type == MP_IRQ_INFO_FLAGS) {
+        return machine_rtc_alarm_armed ? 1 : 0;
+    }
+    return 0;   // MP_IRQ_INFO_TRIGGERS: ALARM0 is 0
+}
+
+static const mp_irq_methods_t machine_rtc_irq_methods = {
+    .trigger = machine_rtc_irq_trigger,
+    .info = machine_rtc_irq_info,
+};
+
+// RTC.irq(*, trigger=RTC.ALARM0, handler=None, wake=machine.IDLE, hard=False)
+static mp_obj_t machine_rtc_irq(size_t n_args, const mp_obj_t *pos_args, mp_map_t *kw_args) {
+    enum { ARG_trigger, ARG_handler, ARG_wake, ARG_hard };
+    static const mp_arg_t allowed_args[] = {
+        { MP_QSTR_trigger, MP_ARG_KW_ONLY | MP_ARG_INT, {.u_int = 0} },
+        { MP_QSTR_handler, MP_ARG_KW_ONLY | MP_ARG_OBJ, {.u_rom_obj = MP_ROM_NONE} },
+        { MP_QSTR_wake,    MP_ARG_KW_ONLY | MP_ARG_INT, {.u_int = 0} },
+        { MP_QSTR_hard,    MP_ARG_KW_ONLY | MP_ARG_BOOL, {.u_bool = false} },
+    };
+    mp_arg_val_t args[MP_ARRAY_SIZE(allowed_args)];
+    mp_arg_parse_all(n_args - 1, pos_args + 1, kw_args, MP_ARRAY_SIZE(args), allowed_args, args);
+
+    rtc_alarm_check_id(args[ARG_trigger].u_int);
+    /* wake is accepted and ignored on purpose: the alarm is routed through
+     * EXTI line 17 whenever it is armed, so it already wakes the chip from
+     * every sleep mode this port offers. There is nothing to select. */
+
+    mp_irq_obj_t *irq = MP_STATE_PORT(machine_rtc_irq_object);
+    if (irq == NULL) {
+        irq = mp_irq_new(&machine_rtc_irq_methods, MP_OBJ_FROM_PTR(&machine_rtc_singleton));
+        MP_STATE_PORT(machine_rtc_irq_object) = irq;
+    }
+    irq->handler = args[ARG_handler].u_obj;
+    irq->ishard = args[ARG_hard].u_bool;
+    return MP_OBJ_FROM_PTR(irq);
+}
+static MP_DEFINE_CONST_FUN_OBJ_KW(machine_rtc_irq_obj, 1, machine_rtc_irq);
+
 enum { ARG_id, ARG_source, ARG_datetime };
 static const mp_arg_t machine_rtc_allowed_args[] = {
     { MP_QSTR_id,       MP_ARG_INT, {.u_int = 0} },
@@ -518,6 +769,12 @@ static const mp_rom_map_elem_t machine_rtc_locals_dict_table[] = {
     { MP_ROM_QSTR(MP_QSTR_now), MP_ROM_PTR(&machine_rtc_now_obj) },
     { MP_ROM_QSTR(MP_QSTR_source), MP_ROM_PTR(&machine_rtc_source_obj) },
 
+    { MP_ROM_QSTR(MP_QSTR_alarm), MP_ROM_PTR(&machine_rtc_alarm_obj) },
+    { MP_ROM_QSTR(MP_QSTR_alarm_left), MP_ROM_PTR(&machine_rtc_alarm_left_obj) },
+    { MP_ROM_QSTR(MP_QSTR_alarm_cancel), MP_ROM_PTR(&machine_rtc_alarm_cancel_obj) },
+    { MP_ROM_QSTR(MP_QSTR_irq), MP_ROM_PTR(&machine_rtc_irq_obj) },
+
+    { MP_ROM_QSTR(MP_QSTR_ALARM0), MP_ROM_INT(0) },
     { MP_ROM_QSTR(MP_QSTR_LSE), MP_ROM_INT(MACHINE_RTC_SRC_LSE) },
     { MP_ROM_QSTR(MP_QSTR_LSI), MP_ROM_INT(MACHINE_RTC_SRC_LSI) },
     { MP_ROM_QSTR(MP_QSTR_HSE), MP_ROM_INT(MACHINE_RTC_SRC_HSE) },
@@ -532,3 +789,9 @@ MP_DEFINE_CONST_OBJ_TYPE(
     print, machine_rtc_print,
     locals_dict, &machine_rtc_locals_dict
     );
+
+/* void * rather than mp_irq_obj_t *: the declaration is copied verbatim into
+ * genhdr/root_pointers.h, which every translation unit includes and which has
+ * no mpirq.h in scope. Every other port with an irq root pointer does the
+ * same. */
+MP_REGISTER_ROOT_POINTER(void *machine_rtc_irq_object);

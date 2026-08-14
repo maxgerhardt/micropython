@@ -239,6 +239,11 @@ int main(void) {
          * reclaimed, so a stray edge cannot dispatch into freed memory. */
         machine_pin_deinit();
 
+        /* Same reasoning for the RTC alarm: its handler is a heap object, and
+         * the alarm keeps running in the backup domain across a soft reset, so
+         * one left armed would dispatch into reclaimed memory when it fired. */
+        machine_rtc_irq_deinit();
+
         /* Stop the PWM outputs too. The timers keep running on their own once
          * started, so without this a soft reset would leave a servo or a motor
          * driver at whatever duty the program that just exited had set, with

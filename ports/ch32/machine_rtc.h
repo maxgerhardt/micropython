@@ -22,4 +22,8 @@ bool machine_rtc_alarm_in(uint32_t seconds);
 /* Disarm and clear a pending alarm. Safe to call when none was armed. */
 void machine_rtc_alarm_clear(void);
 
+/* Drop any Python alarm handler and disarm, for the soft-reset path: the
+ * handler lives on the heap about to be reclaimed. */
+void machine_rtc_irq_deinit(void);
+
 #endif // MICROPY_INCLUDED_CH32_MACHINE_RTC_H

@@ -1,5 +1,6 @@
 #include "ch32h417.h"
 #include "py/mpconfig.h"
+#include "py/persistentcode.h"
 #include "py/runtime.h"
 #include "py/stream.h"
 #include "py/mphal.h"
@@ -308,6 +309,37 @@ void mp_hal_ch32_poll(void) {
     mp_network_lwip_poll();
     #endif
 }
+
+#if MICROPY_EMIT_MACHINE_CODE
+/* Publish machine code that was just written as data.
+ *
+ * The V5F fetches through a 32K instruction cache that does not snoop stores,
+ * so a freshly emitted function is invisible -- or worse, aliases whatever
+ * used to occupy those addresses, which the GC makes likely because it reuses
+ * heap blocks. fence.i is the architectural way to say "the instruction stream
+ * changed"; the SDK's own core_riscv.h issues it after touching the interrupt
+ * enable registers for the same class of reason.
+ *
+ * Defining this macro also hands the port responsibility for viper
+ * relocations, which py/persistentcode.c would otherwise apply itself. It only
+ * passes a non-NULL reloc for MP_SCOPE_FLAG_VIPERRELOC code. Nothing is moved
+ * here -- the code executes where it was allocated -- so the base address is
+ * simply the buffer.
+ *
+ * mpconfigport.h keeps MICROPY_PERSISTENT_CODE_TRACK_FUN_DATA at 1 alongside
+ * this. The automatic choice in py/mpconfig.h drops it to 0 when a port
+ * defines a commit hook, on the assumption that the port also allocates the
+ * text outside the GC heap; this port does not, and untracked text on the GC
+ * heap is collectable while a function pointer into its middle is still live. */
+void *ch32_commit_exec(void *buf, size_t len, void *reloc) {
+    (void)len;
+    if (reloc != NULL) {
+        mp_native_relocate(reloc, (uint8_t *)buf, (uintptr_t)buf);
+    }
+    __asm volatile ("fence.i" ::: "memory");
+    return buf;
+}
+#endif
 
 uintptr_t mp_hal_stdio_poll(uintptr_t poll_flags) {
     uintptr_t ret = 0;

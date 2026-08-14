@@ -62,8 +62,29 @@
 // GC needs callee-saved registers spilled; we use the RISC-V native helper.
 #define MICROPY_GCREGS_SETJMP           (0)
 
-// No native emitter in Milestone 1. Plain RV32IMC codegen can be enabled later.
-#define MICROPY_EMIT_RV32               (0)
+/* Native and viper code generation, plus @micropython.asm_rv32.
+ *
+ * ZBA is on because both cores implement it -- the port already compiles with
+ * -march=...._zba_zbb_zbc_zbs -- and the emitter uses sh1add/sh2add/sh3add for
+ * the indexed loads that dominate viper array access. ZCMP is not: that is a
+ * Zc code-size extension and it is not in this chip's march string.
+ *
+ * Emitted code lands on the GC heap, so it executes from DTCM or from the
+ * shared region depending on which area the allocation came from; both are
+ * executable. The V5F has a 32K I-cache, so MP_PLAT_COMMIT_EXEC issues a
+ * fence.i -- see mpconfigport.c. */
+#define MICROPY_EMIT_RV32               (1)
+#define MICROPY_EMIT_RV32_ZBA           (1)
+#define MICROPY_EMIT_INLINE_RV32        (1)
+void *ch32_commit_exec(void *buf, size_t len, void *reloc);
+#define MP_PLAT_COMMIT_EXEC(buf, len, reloc) ch32_commit_exec(buf, len, reloc)
+/* Keep the GC tracking the emitted text. py/mpconfig.h turns this off when a
+ * port defines MP_PLAT_COMMIT_EXEC, because that normally means the port also
+ * allocates the text itself; here the default GC-heap allocator is still in
+ * use, and an untracked block is collectable while a pointer into its middle
+ * is the only thing keeping a native function alive. */
+#define MICROPY_PERSISTENT_CODE_TRACK_FUN_DATA   (1)
+#define MICROPY_PERSISTENT_CODE_TRACK_BSS_RODATA (0)
 
 #define MICROPY_PY_SYS_PLATFORM         "ch32"
 // Defaults to EXTRA_FEATURES only, but the upstream test suite expects it.

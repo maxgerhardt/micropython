@@ -577,23 +577,30 @@ region runs at HCLK (100 MHz) and code flash is roughly 25 MHz-equivalent, so
 instruction placement dominates performance.
 
     FLASH     0x00000000   64K   V3F boot stub
-    FLASH     0x00010000  512K   V5F image (410K used; the FAT volume follows)
-    ITCM      0x200A0000  128K   .itcm_text: all of py/ + shared/runtime/ (110K used)
+    FLASH     0x00010000  512K   V5F image (441K used; the FAT volume follows)
+    ITCM      0x200A0000  128K   .itcm_text: py/ + shared/runtime/ (114K used)
     DTCM      0x200C0000  256K   .data/.bss/stack + GC heap area 1 (162K)
-    RAM_CODE  0x20100000  320K   .highcode: extmod, mbedtls, oofatfs, SDK drivers, port files (294K used)
-    USB_RAM   0x20150000   16K   .usbram: TinyUSB state (the USB DMA cannot reach DTCM)
-    ETH_RAM   0x20154000   32K   .ethram: MAC descriptors and frame buffers (same reason)
-    HEAP2     0x2015C000  144K   .heap2: GC heap area 2, the rest of the shared region
+    RAM_CODE  0x20100000  336K   .highcode: extmod, mbedtls, oofatfs, SDK drivers, port files (321K used)
+    USB_RAM   0x20154000   16K   .usbram: TinyUSB state (the USB DMA cannot reach DTCM)
+    ETH_RAM   0x20158000   32K   .ethram: MAC descriptors and frame buffers (same reason)
+    HEAP2     0x20160000  128K   .heap2: GC heap area 2, the rest of the shared region
 
 `main()` copies `.itcm_text` into ITCM before calling into it; the SDK startup
 file only knows about `.highcode`.
+
+The RV32 code generator — `asmrv32.o`, `emitnrv32.o`, `emitinlinerv32.o`, 25K
+between them — is excluded from `.itcm_text` even though it lives in `py/`. It
+runs while *compiling* a decorated function, never while running one, and
+admitting it would have pushed the bytecode VM out of ITCM: slower for every
+program, to speed up compilation of the few that use it.
 
 ### The GC heap spans two regions
 
 `MICROPY_GC_SPLIT_HEAP` is on, and `main()` calls `gc_add()` for `.heap2` after
 every `gc_init()`. DTCM has to hold `.data`, `.bss` and the 32K stack as well,
 which left only 162K of it for the heap; the shared region's tail past
-`ETH_RAM` was claimed by nothing at all and adds 144K more, for about 306K.
+`ETH_RAM` was claimed by nothing at all and adds 128K more, for about 290K.
+It was 144K until the RV32 emitter needed 16K of it to fit `RAM_CODE`.
 
 The two areas are not interchangeable. DTCM is zero-wait at the V5F's 400 MHz
 core clock while the shared region is reached over the system bus at HCLK, so
@@ -604,7 +611,7 @@ DTCM never touches the slower region, and one that does not gets to run at all
 instead of raising `MemoryError`. There is no way to ask for an allocation in a
 particular area; `uctypes.addressof()` is how you find out where one landed.
 
-A full `gc.collect()` now sweeps 306K rather than 162K, half of it at
+A full `gc.collect()` now sweeps 290K rather than 162K, nearly half of it at
 shared-SRAM speed.
 
 ## Filesystem
@@ -883,11 +890,60 @@ Example, reading a DHT frame back as named fields:
 - `MICROPY_HW_BOOT_DELAY_LOOPS` holds off clock and peripheral setup at reset,
   leaving a window for a debugger to attach if firmware ever wedges SDI.
 
-## Not yet implemented
+## Native code
 
-RTC alarms, and the RV32 native emitter (which can be enabled later targeting
-plain RV32IMC — the core is a superset, so no `xw` support is needed in the
-emitter).
+`@micropython.native`, `@micropython.viper` and `@micropython.asm_rv32` all
+work, through upstream's RV32 backend. `MICROPY_EMIT_RV32_ZBA` is on because
+both cores implement Zba — the port already compiles `-march=..._zba_zbb_...`
+— so indexed loads use `sh1add`/`sh2add`/`sh3add`. `MICROPY_EMIT_RV32_ZCMP` is
+not: that is a Zc code-size extension and it is not in this chip's march
+string. The emitter needs no `xw` support; the core is a superset of RV32IMC
+and the generated code stays inside the base ISA plus Zba.
+
+Measured on a 200 000-iteration accumulate loop: bytecode 494 ms, native
+384 ms (1.3x), viper 12 ms (**41x**). Native barely moves a loop like that
+because the arithmetic is still on Python objects; viper is where the win is.
+
+Emitted code goes on the GC heap, so it runs from DTCM or from the shared
+region depending on which area the allocation came from. Both are executable.
+The V5F fetches through a 32K instruction cache that does not snoop stores, so
+`MP_PLAT_COMMIT_EXEC` issues a `fence.i` — without it a function emitted onto
+a block the GC had recycled would alias whatever used to be there. Defining
+that macro also hands the port responsibility for viper relocations, and it
+switches off `MICROPY_PERSISTENT_CODE_TRACK_FUN_DATA` unless the port asks for
+it back, which `mpconfigport.h` does: the text is still GC-heap allocated, and
+an untracked block is collectable while a pointer into its middle is the only
+thing keeping a native function alive.
+
+## RTC alarms
+
+One comparator, so one alarm, and it compares whole seconds against the same
+counter `time.time()` reads.
+
+    rtc = machine.RTC()
+    rtc.irq(trigger=machine.RTC.ALARM0, handler=lambda t: print("ding"))
+    rtc.alarm(machine.RTC.ALARM0, 5000)            # 5 s from now
+    rtc.alarm(machine.RTC.ALARM0, 1000, repeat=True)
+    rtc.alarm(machine.RTC.ALARM0, rtc.datetime())  # absolute, 8-tuple
+    rtc.alarm_left()                               # ms, always a whole second
+    rtc.alarm_cancel()
+
+`ALARM0` is the only id; anything else raises `OSError(ENODEV)`. A millisecond
+interval rounds **up** to the next second, because the hardware has no finer
+granularity and an alarm firing early is worse than one firing late. `repeat`
+is the handler re-arming — the peripheral cannot do it — stepping the
+comparator on from the previous target rather than from the counter, so the
+period does not drift by however long the handler took to reach.
+
+The alarm is routed through EXTI line 17 whenever armed, which is what lets it
+wake the chip out of Stop, so `irq(wake=...)` is accepted and ignored: there is
+nothing to select. The corollary is that `lightsleep(ms)` and `deepsleep(ms)`
+take the same comparator once the requested time passes the ~26 s LPTIM covers,
+so a long sleep replaces a pending alarm. There is no second one.
+
+A soft reset clears the handler and disarms, because the alarm keeps running in
+the backup domain and the handler is a heap object that is about to be
+reclaimed.
 
 ## Accelerated framebuf
 
