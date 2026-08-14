@@ -42,6 +42,7 @@ void machine_uart_deinit_all(void);
 #endif
 #include "machine_pwm.h"
 #include "machine_mem_backup.h"
+#include "machine_counter.h"
 #include "machine_rtc.h"
 #include "machine_timer.h"
 #include "machine_wdt.h"
@@ -259,6 +260,7 @@ int main(void) {
         /* And the hardware timers, for the same reason as the pins: the
          * counter keeps running and its callback is a heap object. */
         machine_timer_deinit_all();
+        machine_counter_deinit_all();
 
         /* Same for the analog outputs, which otherwise hold their last voltage
          * indefinitely. */

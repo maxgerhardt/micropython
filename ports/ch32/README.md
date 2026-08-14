@@ -1054,6 +1054,52 @@ time repeats at the timer's rate: at 500 Hz that starved `tud_task()` until its
 event FIFO filled, `TU_ASSERT` executed an `ebreak`, and the board wedged in
 the SDK's weak `Break_Point_Handler` with no output at all.
 
+## Counting pulses
+
+`machine.Counter` clocks a timer from a pin, in **external clock mode 2** — the
+`ECE` bit in `SMCFGR` routes ETR straight to the counter's clock, so every edge
+is one count and no software is in the loop:
+
+    c = machine.Counter(2)                       # ETR on PA5
+    c = machine.Counter(2, edge=machine.Counter.FALLING)
+    c = machine.Counter(2, direction=machine.Counter.DOWN)
+    c.value()        # signed; the 16-bit counter plus counted wraps
+    c.value(0)       # reset
+
+Mode 2 is the one to want: mode 1 routes the same signal through the
+slave-mode controller and costs the trigger input, and the input-capture
+channels cost an interrupt per pulse.
+
+**2000 pulses 128 ns apart come back as exactly 2000**, and 70 000 pulses read
+as 70 000 — the hardware counter is 16 bits and the update interrupt counts the
+wraps, so only the `value()` call can allocate, as the `machine.Counter`
+documentation asks.
+
+### ETR pins
+
+| | ETR |
+|---|---|
+| TIM1 | **PA12/AF1** (vendor example; USBFS D+, so unusable here), PE7/AF1 |
+| TIM2 | **PA5/AF1** (driven and counted), PA0/AF1, PA15/AF1 |
+| TIM3 | PD2/AF2 |
+| TIM4 | PE0/AF2 |
+| TIM8 | PA0/AF3 |
+
+Only the two in bold are known. The rest matches STM32F4 — where TIM1_ETR is
+also PA12/AF1 and TIM1_CH2 also PE11, both of which this chip agrees with — but
+that is evidence, not proof: this part's **CAN** alternate functions are *not*
+the STM32 ones. Treat an undriven pin here as a guess. TIM6 and TIM7 have no
+ETR at all.
+
+Testing needs no wiring: the counter samples the pad, so driving the ETR pin as
+an ordinary GPIO output is counted exactly as an external signal would be. Note
+the order — `Counter()` reconfigures the pin as a floating input, so a
+`Pin(OUT)` has to come *after* it.
+
+`GPIOA`'s `BSHR` is at **0x40010810** on this part, not the STM32 address. A
+viper loop writing the wrong one toggles nothing, counts nothing, and looks
+exactly like a broken ETR.
+
 ### Sharing the timers with PWM
 
 `machine.PWM` claims timer *channels*; `machine.Timer` claims a whole timer,

@@ -521,9 +521,11 @@ static const machine_pwm_af_t *machine_pwm_choose(uint8_t pin, mp_int_t timer_re
         if (timer_req >= 0 && opt->timer != timer_req) {
             continue;
         }
-        /* A machine.Timer on this one owns the update event and therefore the
-         * period, which is exactly what a PWM channel needs to control. */
-        if (machine_timer_owns(opt->timer)) {
+        /* Something else may own the whole timer -- a machine.Timer driving
+         * the update event, or a machine.Counter clocking it from a pin --
+         * and either owns the period, which is what a PWM channel controls. */
+        uint8_t held = ch32_timer_owner(opt->timer);
+        if (held != CH32_TIMER_FREE && held != CH32_TIMER_PWM) {
             continue;
         }
         machine_pwm_timer_t *state = &machine_pwm_timers[opt->timer - 1];
@@ -571,6 +573,7 @@ static void machine_pwm_release(machine_pwm_obj_t *self) {
 
     state->claimed &= (uint8_t) ~(1u << (self->channel - 1));
     if (state->claimed == 0) {
+        ch32_timer_release(self->timer, CH32_TIMER_PWM);
         /* Nothing left on this timer: stop it and take its clock away rather
          * than leaving a counter running for no one. */
         if (machine_pwm_is_advanced(self->timer)) {
@@ -580,13 +583,6 @@ static void machine_pwm_release(machine_pwm_obj_t *self) {
         machine_pwm_clock_enable(self->timer, DISABLE);
     }
     self->timer = 0;
-}
-
-bool machine_pwm_timer_in_use(uint8_t timer) {
-    if (timer < 1 || timer > PWM_TIMER_MAX) {
-        return false;
-    }
-    return machine_pwm_timers[timer - 1].claimed != 0;
 }
 
 void machine_pwm_deinit_all(void) {
@@ -607,6 +603,7 @@ void machine_pwm_deinit_all(void) {
         TIM_Cmd(tim, DISABLE);
         machine_pwm_clock_enable(timer, DISABLE);
         state->claimed = 0;
+        ch32_timer_release(timer, CH32_TIMER_PWM);
     }
 }
 
@@ -741,7 +738,10 @@ static void mp_machine_pwm_init_helper(machine_pwm_obj_t *self,
         }
         ccr = machine_pwm_ccr_for(period, state->duty_u16[ch_index]);
     }
-    /* Claim before applying the timing, so the rescale loop sees this channel. */
+    /* Claim before applying the timing, so the rescale loop sees this channel.
+     * The whole-timer claim goes into the shared table too, so a machine.Timer
+     * or machine.Counter cannot take this timer out from under the output. */
+    ch32_timer_claim(self->timer, CH32_TIMER_PWM);
     state->claimed |= (uint8_t)(1u << ch_index);
     state->owner[ch_index] = self->pin;
 

@@ -7,15 +7,17 @@
  * uses them: microsecond periods, an interrupt per timer, and an optional hard
  * callback that runs in the ISR.
  *
- * --- sharing the timers with PWM ---------------------------------------
+ * --- who owns which timer ----------------------------------------------
  *
- * machine.PWM claims timer *channels*; machine.Timer claims a whole timer,
- * because it drives the update event and therefore owns the period. The two
- * have to agree, and they do it by asking each other rather than through a
- * common allocator: machine_pwm.c is pasted into extmod/machine_pwm.c and is
- * static throughout, so there is no table here to share. Each side exports one
- * predicate -- machine_pwm_timer_in_use() and machine_timer_owns() -- and
- * checks the other before claiming.
+ * Three things want them: machine.PWM drives the compare channels,
+ * machine.Timer drives the update event, and machine.Counter clocks the
+ * counter from a pin. All three set the period, so no two can share one.
+ *
+ * The claim table below is the arbiter, and it lives here because this is an
+ * ordinary translation unit -- machine_pwm.c and machine_counter.c are pasted
+ * into their extmod hosts and are static throughout, so neither can hold state
+ * the others reach. PWM claims when its first channel goes up and releases
+ * when its last comes down.
  *
  * Timer(-1) allocates, and prefers TIM6 and TIM7. Those are the two with no
  * output channels at all, so a Timer on one of them costs PWM nothing; taking
@@ -33,7 +35,7 @@
 #include "extmod/modmachine.h"
 
 #include "irq.h"
-#include "machine_pwm.h"
+#include "machine_counter.h"
 #include "machine_timer.h"
 
 #define TIMER_MIN (1)
@@ -85,11 +87,48 @@ static IRQn_Type machine_timer_irqn(uint8_t id) {
     return irqs[id - 1];
 }
 
-bool machine_timer_owns(uint8_t id) {
+/* --- the shared claim table ---
+ *
+ * See machine_timer.h. Plain static rather than a GC root: it holds owner tags,
+ * not pointers. */
+static uint8_t ch32_timer_claims[TIMER_COUNT];
+
+bool ch32_timer_claim(uint8_t id, uint8_t owner) {
     if (id < TIMER_MIN || id > TIMER_MAX) {
         return false;
     }
-    return machine_timer_obj(id) != NULL;
+    uint8_t held = ch32_timer_claims[id - 1];
+    if (held != CH32_TIMER_FREE && held != owner) {
+        return false;
+    }
+    ch32_timer_claims[id - 1] = owner;
+    return true;
+}
+
+void ch32_timer_release(uint8_t id, uint8_t owner) {
+    if (id >= TIMER_MIN && id <= TIMER_MAX && ch32_timer_claims[id - 1] == owner) {
+        ch32_timer_claims[id - 1] = CH32_TIMER_FREE;
+    }
+}
+
+uint8_t ch32_timer_owner(uint8_t id) {
+    if (id < TIMER_MIN || id > TIMER_MAX) {
+        return CH32_TIMER_FREE;
+    }
+    return ch32_timer_claims[id - 1];
+}
+
+const char *ch32_timer_owner_name(uint8_t owner) {
+    switch (owner) {
+        case CH32_TIMER_PWM:
+            return "PWM";
+        case CH32_TIMER_TIMER:
+            return "Timer";
+        case CH32_TIMER_COUNTER:
+            return "Counter";
+        default:
+            return "nothing";
+    }
 }
 
 /* --- clocks ---
@@ -215,6 +254,13 @@ static void machine_timer_isr(uint8_t id) {
     }
     TIM_ClearITPendingBit(tim, TIM_IT_Update);
 
+    /* The vectors are per timer, not per driver, so a Counter's wrap arrives
+     * here too. It owns the timer exclusively, so if it takes the interrupt
+     * there is no Timer to consider. */
+    if (machine_counter_irq(id)) {
+        return;
+    }
+
     machine_timer_obj_t *self = machine_timer_obj(id);
     if (self == NULL) {
         /* Nobody owns this any more: silence it rather than taking the
@@ -233,7 +279,7 @@ static void machine_timer_isr(uint8_t id) {
     }
     if (self->hard) {
         /* Straight from the interrupt. The callback must not allocate, and
-         * mp_sched_lock() keeps it from being pre-empted by the scheduler
+         * mp_sched_lock() keeps it from being preempted by the scheduler
          * halfway through.
          *
          * The exception path is caught here rather than left to
@@ -289,6 +335,7 @@ void machine_timer_deinit_all(void) {
         machine_timer_obj_t *self = machine_timer_obj(id);
         if (self != NULL) {
             machine_timer_stop(id);
+            ch32_timer_release(id, CH32_TIMER_TIMER);
             self->id = 0;
             machine_timer_set_obj(id, NULL);
         }
@@ -384,7 +431,7 @@ static mp_obj_t machine_timer_make_new(const mp_obj_type_t *type,
         id = 0;
         for (size_t i = 0; i < TIMER_COUNT; i++) {
             uint8_t candidate = order[i];
-            if (!machine_timer_owns(candidate) && !machine_pwm_timer_in_use(candidate)) {
+            if (ch32_timer_owner(candidate) == CH32_TIMER_FREE) {
                 id = candidate;
                 break;
             }
@@ -394,9 +441,14 @@ static mp_obj_t machine_timer_make_new(const mp_obj_type_t *type,
         }
     } else if (id < TIMER_MIN || id > TIMER_MAX) {
         mp_raise_ValueError(MP_ERROR_TEXT("Timer(1) to Timer(12), or Timer(-1)"));
-    } else if (machine_pwm_timer_in_use((uint8_t)id)) {
-        mp_raise_ValueError(MP_ERROR_TEXT("timer is driving a PWM output"));
     }
+
+    uint8_t held = ch32_timer_owner((uint8_t)id);
+    if (held != CH32_TIMER_FREE && held != CH32_TIMER_TIMER) {
+        mp_raise_msg_varg(&mp_type_ValueError,
+            MP_ERROR_TEXT("timer %d is held by %s"), (int)id, ch32_timer_owner_name(held));
+    }
+    ch32_timer_claim((uint8_t)id, CH32_TIMER_TIMER);
 
     machine_timer_obj_t *self = machine_timer_obj(id);
     if (self == NULL) {
@@ -431,6 +483,7 @@ static mp_obj_t machine_timer_deinit(mp_obj_t self_in) {
     machine_timer_obj_t *self = MP_OBJ_TO_PTR(self_in);
     if (self->id != 0) {
         machine_timer_stop(self->id);
+        ch32_timer_release(self->id, CH32_TIMER_TIMER);
         machine_timer_set_obj(self->id, NULL);
         self->id = 0;
         self->callback = mp_const_none;
