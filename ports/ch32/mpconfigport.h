@@ -108,6 +108,12 @@ void *ch32_commit_exec(void *buf, size_t len, void *reloc);
  * strips with. The timed pin loop is ports/ch32/machine_bitstream.c. */
 #define MICROPY_PY_MACHINE_BITSTREAM    (1)
 
+/* machine.CAN. Three bxCAN controllers, no CAN-FD. */
+#define MICROPY_PY_MACHINE_CAN          (1)
+#define MICROPY_PY_MACHINE_CAN_INCLUDEFILE "ports/ch32/machine_can.c"
+#define MICROPY_HW_NUM_CAN              (3)
+#define MICROPY_HW_ENABLE_FDCAN         (0)
+
 /* I2C. The hardware peripheral lives in ports/ch32/machine_i2c.c; SoftI2C
  * comes from extmod and bit-bangs any two pins, which is the fallback for the
  * pin pairs the I2C mux cannot reach. */

@@ -24,9 +24,27 @@ static void mp_machine_idle(void) {
 }
 
 static mp_obj_t mp_machine_unique_id(void) {
-    /* 96-bit factory-programmed device ID. */
+    /* 64 bits, not the 96 this used to return.
+     *
+     * The ESIG area really does hold eight programmed bytes and then erased
+     * flash. Dumped on this part:
+     *
+     *   1ffff7e8  5eb50116
+     *   1ffff7ec  6c080c3d
+     *   1ffff7f0  e339e339   <- CH32_FLASH_ERASED_WORD
+     *   1ffff7f4  e339e339
+     *
+     * so the previous twelve bytes ended ...39e339e3, which is not an
+     * identifier at all and would have collided across every CH32H417 for any
+     * caller that looked only at the tail. wlink agrees, reporting
+     * UID(16-01-b5-5e-3d-0c-08-6c).
+     *
+     * These are the same fuses the Ethernet MAC comes from -- eth.c reads the
+     * first six bytes backwards, which is the order WCHNET_GetMacAddr() uses
+     * and the order printed on the label. So unique_id() is not the MAC, but
+     * its first six bytes reversed are. */
     const uint8_t *id = (const uint8_t *)0x1FFFF7E8;
-    return mp_obj_new_bytes(id, 12);
+    return mp_obj_new_bytes(id, 8);
 }
 
 static mp_obj_t mp_machine_get_freq(void) {

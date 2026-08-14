@@ -950,6 +950,73 @@ under-corrects because the two errors are not symmetric: a long *period* is
 free, since WS2812 only cares that the gap stays under the ~50 µs that latches
 the strip, while a short *high* time is what turns a one into a zero.
 
+## CAN
+
+Three bxCAN controllers, no CAN-FD. `machine.CAN(1)`, `CAN(2)`, `CAN(3)`.
+
+    can = machine.CAN(1, bitrate=500000)
+    can.send(0x123, b"hello")
+    msg = can.recv()          # None if nothing is waiting
+
+Pins come from the vendor's own table, because the alternate function differs
+per pin rather than per peripheral — CAN1 is **AF3** on PB6/PB7 and AF9
+everywhere else:
+
+| | TX | RX |
+|---|---|---|
+| CAN1 | PA12/AF9 **PB7/AF3** PB9/AF9 PD1/AF9 PA14/AF5 | PA11/AF9 **PB6/AF3** PB8/AF9 PD0/AF9 PA13/AF5 |
+| CAN2 | PB13/AF9 PB6/AF9 | PB12/AF9 PB5/AF9 |
+| CAN3 | PD13/AF5 PF7/AF2 PF3/AF2 **PC5/AF6** | PD12/AF5 PF6/AF2 PF4/AF2 **PC4/AF6** |
+
+The defaults are the pairs in the 3.3 V domain, which is not most of them:
+**CAN1 on PB7/PB6** and **CAN3 on PC5/PC4**. Both drive an ordinary 3.3 V
+transceiver directly and neither touches PB8/PB9, the SWD pins. CAN2 has only
+PB12/PB13 and PB5/PB6 to choose from, PB6 collides with CAN1, so it defaults to
+PB12/PB13 — whose domain has not been measured here. Prefer CAN1 and CAN3.
+
+Filters are 32-bit mask mode, fourteen per controller. CAN3's live in its own
+configuration registers (`FMCFGR_CAN3` and friends) and its bit position is
+**bank − 27**, not bank − 28, with `FSCFGR` staying the non-CAN3 register while
+the other three switch. All of that is what the vendor's `CAN_FilterInit()`
+does and none of it is what the register names suggest; getting it wrong leaves
+CAN3 with no active filter, which presents as CAN3 simply receiving nothing.
+
+Constructing a `CAN` master-resets the controller, so `get_counters()` starts
+at zero. TEC and REC are hardware counters with no other way to clear them, and
+without the reset they carry across `deinit()`, across a new `CAN()` and across
+a soft reset. The cost: CAN1 owns the filter block, so re-initialising CAN1
+drops the filters of any other controller that is running.
+
+### What is verified, and what is not
+
+`test_can.py` passes 33 checks in loopback: identifiers standard and extended,
+zero- and eight-byte payloads, all three mailboxes, filters and masks,
+interrupts, counters, and all three controllers.
+
+Loopback cannot check the **bit rate**, because transmitter and receiver share
+one clock and stay consistent whatever it is set to — a bit time built from the
+400 MHz core clock instead of the 100 MHz bus clock would look perfect. So the
+test times a burst instead: 888 µs a frame at 125 kbit/s and 234 µs at
+500 kbit/s, against 960 and 240 nominal for a 120-bit frame. That confirms the
+clock.
+
+What is **not** confirmed is that the pads are driving. In normal mode with no
+transceiver a frame should go unacknowledged and the transmit error counter
+should climb; instead it completes and comes back in the receive FIFO — and it
+still does with the RX pin taken back as a plain GPIO input, so the receiver is
+not being fed from the pad. Whether that is an internal loopback default or a
+wrong AF cannot be told apart from inside.
+
+Two nodes settle it, and the board has the pins for it. With two 3.3 V
+transceivers (VP230 or similar):
+
+    CAN1: PB7 -> TXD, PB6 <- RXD    on transceiver A
+    CAN3: PC5 -> TXD, PC4 <- RXD    on transceiver B
+    A CANH - B CANH, A CANL - B CANL, 120 ohm at each end
+
+then send from `CAN(1)` in `MODE_NORMAL` and receive on `CAN(3)`. That proves
+the pins, the alternate functions, the transceivers and the bit rate at once.
+
 ## RTC alarms
 
 One comparator, so one alarm, and it compares whole seconds against the same

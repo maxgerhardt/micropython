@@ -25,22 +25,29 @@ MEMORY
 	/* Shared region: .text/.rodata, copied from flash by startup. Runs at HCLK
 	   (100 MHz) rather than the V5F core clock; task 6 evaluates alternatives. */
 	ITCM (xrw)     : ORIGIN = 0x200A0000, LENGTH = 128K
-	/* 336K. It was 240K until mbedtls arrived -- TLS adds about 70K of code
-	   and overflowed the region outright -- then 320K until the RV32 native
-	   emitter, whose backend is another 25K and overran it by 1144 bytes. The
-	   16K came from HEAP2 below. */
-	RAM_CODE (xrw) : ORIGIN = 0x20100000, LENGTH = 336K
+	/* 368K, and the size is set by the *generic* toolchain, not the WCH one:
+	   stock GCC without the xw extension emits about 15K more for the same
+	   sources, so CI overflows this region while a local build still links.
+	   Check with CH32_TOOLCHAIN=generic before trusting a size here.
+
+	   History, because it has only gone one way: 240K until mbedtls (+70K of
+	   TLS), 320K until the RV32 emitter (+25K of backend), then 336K, and now
+	   368K for machine.CAN and machine.Timer. Every increase came out of
+	   HEAP2. The next lever is not this boundary -- it is moving cold code
+	   (X.509 parsing, oofatfs, USB descriptors) back to execute from flash,
+	   which is a quarter of the speed but is code that runs once. */
+	RAM_CODE (xrw) : ORIGIN = 0x20100000, LENGTH = 368K
 	/* USBFS DMA cannot reach DTCM, so endpoint buffers live here, in
 	   the shared region on the system bus. */
-	USB_RAM (xrw)  : ORIGIN = 0x20154000, LENGTH = 16K
+	USB_RAM (xrw)  : ORIGIN = 0x2015C000, LENGTH = 16K
 	/* Same reason as USB_RAM: the Ethernet DMA is on the system bus and cannot
 	   reach DTCM either. Descriptors and MAC frame buffers live here. */
-	ETH_RAM (xrw)  : ORIGIN = 0x20158000, LENGTH = 32K
+	ETH_RAM (xrw)  : ORIGIN = 0x20160000, LENGTH = 32K
 	/* The rest of the shared area, out to its end at 0x20180000. Nothing had
 	   claimed it, so it goes to the GC as a second heap area -- see
 	   MICROPY_GC_SPLIT_HEAP and the gc_add() call in main.c. It takes the heap
-	   from the 162K that fits in DTCM to about 290K. */
-	HEAP2 (rw)     : ORIGIN = 0x20160000, LENGTH = 128K
+	   from the 162K that fits in DTCM to about 258K. */
+	HEAP2 (rw)     : ORIGIN = 0x20168000, LENGTH = 96K
 	/* DTCM: zero-wait at the V5F core clock. Holds .data/.bss/stack/heap. */
 	RAM_LOAD (xrw) : ORIGIN = 0x200C0000, LENGTH = 256
 	RAM (xrw)      : ORIGIN = (0x200C0000+256), LENGTH = (256K-256)

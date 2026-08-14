@@ -37,6 +37,9 @@
 #if MICROPY_PY_MACHINE_UART
 void machine_uart_deinit_all(void);
 #endif
+#if MICROPY_PY_MACHINE_CAN
+#include "extmod/machine_can.h"
+#endif
 #include "machine_pwm.h"
 #include "machine_mem_backup.h"
 #include "machine_rtc.h"
@@ -265,6 +268,14 @@ int main(void) {
          * construction failing on parameters it had never been given. */
         #if MICROPY_PY_MACHINE_UART
         machine_uart_deinit_all();
+        #endif
+
+        /* And the CAN controllers, for the same reason with an extra edge: a
+         * bxCAN left running keeps acknowledging frames on a live bus, so
+         * every other node goes on believing this one is there while its
+         * driver state has been reclaimed. */
+        #if MICROPY_PY_MACHINE_CAN
+        machine_can_deinit_all();
         #endif
 
         /* The netif deliberately stays up across a soft reset, so an Ethernet

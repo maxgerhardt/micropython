@@ -11,7 +11,7 @@ import uctypes
 # The DTCM window ends here; everything above is the shared region.
 DTCM_START = 0x200C0000
 DTCM_END = 0x20100000
-HEAP2_START = 0x20160000
+HEAP2_START = 0x20168000
 HEAP2_END = 0x20180000
 
 passed = 0
@@ -35,7 +35,7 @@ total = free + gc.mem_alloc()
 # each area's allocation tables -- so anything near 300K proves the second area
 # was added, and anything near 160K proves gc_add() never ran.
 print("heap total", total, "free", free)
-check("heap spans both areas", total > 270 * 1024)
+check("heap spans both areas", total > 240 * 1024)
 
 # A small allocation on a collected heap goes to area 1: gc_alloc() searches
 # from the front of the area list and area 1 has room.
