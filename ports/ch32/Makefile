@@ -153,6 +153,7 @@ SRC_C += \
 	machine_timer.c \
 	machine_counter.c \
 	machine_encoder.c \
+	machine_touchpad.c \
 	machine_i2c.c \
 	machine_spi.c \
 	machine_dac.c \

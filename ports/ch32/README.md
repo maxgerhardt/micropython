@@ -1100,6 +1100,43 @@ the order — `Counter()` reconfigures the pin as a floating input, so a
 viper loop writing the wrong one toggles nothing, counts nothing, and looks
 exactly like a broken ETR.
 
+## Capacitive touch
+
+`machine.TouchPad` uses the TKEY peripheral, which is not a separate block at
+all: `TKey1` **is** `ADC1`, and two bits in `CTLR1` turn the converter into a
+capacitance meter. A measurement charges the pad for a fixed time, discharges
+it through the converter and reports how far it got, so more capacitance means
+a smaller number — the same direction as the ESP32's touch peripheral, and the
+same API:
+
+    t = machine.TouchPad(machine.Pin("PC4"))
+    t.read()                                   # smaller when touched
+    machine.TouchPad(machine.Pin("PC4"), charge=0x40, discharge=0xFF)
+
+Any pin with an ADC channel works: PA0–PA7, PB0–PB1, PC0–PC5. `read()` is the
+raw number, as on ESP32 — a baseline and a threshold belong to the application,
+which knows what its pad looks like.
+
+The vendor ships a precompiled `libCH32H417_TOUCH.a` beside its example, and
+this does not use it. That library is the filtering and debouncing layer; the
+measurement itself is seven register writes, taken from the example's own
+`hardware.c`.
+
+Measured here, with nothing attached: an isolated pin reads about **4087** with
+a spread of 1 over sixteen reads, and PB0/PB1 — strapped together on this board,
+so each loads the other — read about **1858**. That factor of two from a second
+pin's worth of capacitance is what a finger does, more gently.
+
+`charge` and `discharge` matter once a pad is loaded enough not to saturate: on
+the strapped pair, `charge=0x20` reads 546 against 1857 at the default `0x9F`.
+On an isolated pin both read 4087, because it discharges before the counter has
+moved. A bigger plate wants more of both.
+
+`machine.ADC` and `machine.TouchPad` share ADC1 and can be used in any order:
+the TKEY bits are set for the measurement and cleared afterwards. The channel
+table and the converter setup come from `machine_adc.c` rather than being
+copied.
+
 ## Quadrature encoders
 
 `machine.Encoder` decodes quadrature in the timer's **encoder mode**, a slave

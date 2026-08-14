@@ -14,6 +14,7 @@
 #include "py/mphal.h"
 #include "py/runtime.h"
 
+#include "machine_adc.h"
 #include "machine_pin.h"
 
 #define ADC_CHANNEL_NONE (0xff)
@@ -26,7 +27,7 @@
 /* ADC input number for each pin that has one, indexed by pin id. Taken from
  * the datasheet's pin table: PA0-PA7 are IN0-IN7, PB0/PB1 are IN8/IN9, and
  * PC0-PC5 are IN10-IN15. Pins without an analog function hold NONE. */
-static uint8_t adc_channel_for_pin(uint8_t pin_id) {
+uint8_t machine_adc_channel_for_pin(uint8_t pin_id) {
     uint8_t port = MACHINE_PIN_PORT(pin_id);
     uint8_t num = MACHINE_PIN_NUM(pin_id);
     if (port == 0 && num <= 7) {
@@ -49,7 +50,7 @@ typedef struct _machine_adc_obj_t {
 
 static bool adc_initialised;
 
-static void adc_init_hardware(void) {
+void machine_adc_init_hardware(void) {
     if (adc_initialised) {
         return;
     }
@@ -98,12 +99,12 @@ static mp_obj_t mp_machine_adc_make_new(const mp_obj_type_t *type, size_t n_args
     mp_arg_check_num(n_args, n_kw, 1, 1, false);
 
     const machine_pin_obj_t *pin = machine_pin_get(args[0]);
-    uint8_t channel = adc_channel_for_pin(pin->id);
+    uint8_t channel = machine_adc_channel_for_pin(pin->id);
     if (channel == ADC_CHANNEL_NONE) {
         mp_raise_ValueError(MP_ERROR_TEXT("pin has no ADC channel"));
     }
 
-    adc_init_hardware();
+    machine_adc_init_hardware();
 
     /* Analog mode disconnects the digital input buffer, which would otherwise
      * both load the signal and burn current at mid-rail. */
