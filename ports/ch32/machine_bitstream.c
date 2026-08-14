@@ -103,6 +103,14 @@ void machine_bitstream_high_low(mp_hal_pin_obj_t pin, uint32_t *timing_ns,
         }
     }
 
+    /* And once more after the loop. The comparisons above only see a reload
+     * that falls between two bit *starts*, so one landing inside the last bit
+     * would go uncounted -- which showed up as a 1024 us transfer occasionally
+     * measuring 63 us, depending only on where in the millisecond it began. */
+    if (SysTick0->CNT < previous) {
+        ++reloads;
+    }
+
     /* Minus one: the handler is already pending for the most recent reload and
      * will count that one itself the moment interrupts come back. */
     if (reloads > 1) {
