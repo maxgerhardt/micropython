@@ -61,6 +61,41 @@ cbc_ct = h("7649abac8119b246cee98e9b12e9197d")
 check("AES-128 CBC encrypt", cryptolib.aes(cbc_key, 2, cbc_iv).encrypt(cbc_pt) == cbc_ct)
 check("AES-128 CBC decrypt", cryptolib.aes(cbc_key, 2, cbc_iv).decrypt(cbc_ct) == cbc_pt)
 
+# SP 800-38A F.5.1, AES-128 CTR, first two blocks. Mode 6 exists only because
+# MICROPY_PY_CRYPTOLIB_CTR is set; it is off by default upstream. The counter
+# is incremented by modcryptolib.c and only the block encryption reaches the
+# ECDC, so this checks the composition rather than the accelerator.
+ctr_key = h("2b7e151628aed2a6abf7158809cf4f3c")
+ctr_iv = h("f0f1f2f3f4f5f6f7f8f9fafbfcfdfeff")
+ctr_pt = h("6bc1bee22e409f96e93d7e117393172aae2d8a571e03ac9c9eb76fac45af8e51")
+ctr_ct = h("874d6191b620e3261bef6864990db6ce9806f66b7970fdff8617187bb9fffdff")
+check("AES-128 CTR encrypt", cryptolib.aes(ctr_key, 6, ctr_iv).encrypt(ctr_pt) == ctr_ct)
+check("AES-128 CTR decrypt", cryptolib.aes(ctr_key, 6, ctr_iv).decrypt(ctr_ct) == ctr_pt)
+
+# hashlib, which is mbedtls's md5/sha1/sha256 behind extmod/modhashlib.c. The
+# module needs MICROPY_PY_HASHLIB because this port is CORE_FEATURES; the two
+# algorithm selections beside it were choosing the contents of a module that
+# was never built. Vectors are the standard "abc" digests. There is no sha384
+# or sha512: modhashlib.c does not implement them.
+import hashlib
+
+check(
+    "hashlib md5",
+    binascii.hexlify(hashlib.md5(b"abc").digest()) == b"900150983cd24fb0d6963f7d28e17f72",
+)
+check(
+    "hashlib sha1",
+    binascii.hexlify(hashlib.sha1(b"abc").digest()) == b"a9993e364706816aba3e25717850c26c9cd0d89d",
+)
+sha256_abc = b"ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad"
+check("hashlib sha256", binascii.hexlify(hashlib.sha256(b"abc").digest()) == sha256_abc)
+
+# update() must accumulate across calls rather than restart the digest.
+incremental = hashlib.sha256()
+incremental.update(b"a")
+incremental.update(b"bc")
+check("hashlib sha256 incremental", binascii.hexlify(incremental.digest()) == sha256_abc)
+
 # ssl and requests should both be importable without a filesystem.
 import ssl
 

@@ -842,6 +842,22 @@ matter more on a board than they do in general:
 | `machine.mem_backup` | See "Backup memory". |
 | `time.time()`, `localtime()`, `mktime()` | Answered by the RTC. |
 | Unicode `str` | So `"°C"` prints as `°C`. |
+| `binascii` | Hex and base64, which HTTP and TLS work assumes. |
+| `hashlib` | `md5`, `sha1`, `sha256`. mbedtls already implements all three for TLS, so the module is a wrapper and costs almost nothing. |
+| `cryptolib` AES-CTR | ECB and CBC arrive with `MICROPY_PY_SSL`; CTR is off upstream by default. |
+
+`cryptolib`'s AES runs on the ECDC accelerator. `extmod/modcryptolib.c` calls
+`mbedtls_aes_crypt_ecb`/`_cbc` whenever `MICROPY_SSL_MBEDTLS` is set, and
+`MBEDTLS_AES_ALT` points those at `mbedtls/aes_alt.c` — mbedtls's software AES
+is not compiled at all. 4 KB of CBC encrypts in 441 µs, about 9.3 MB/s. CTR is
+composed in `modcryptolib.c` from hardware ECB blocks, so the counter itself is
+incremented in software.
+
+There is no `sha384` or `sha512`, and no flag would add them:
+`extmod/modhashlib.c` implements md5, sha1 and sha256 and nothing else. mbedtls
+does have SHA-512 linked in, for the TLS 1.2 ciphersuites, but nothing exposes
+it to Python. `hexdigest()` is also absent — use
+`binascii.hexlify(h.digest())`.
 
 Example, reading a DHT frame back as named fields:
 
@@ -869,9 +885,9 @@ Example, reading a DHT frame back as named fields:
 
 ## Not yet implemented
 
-Ethernet, RTC alarms, and the RV32 native emitter (which can be enabled
-later targeting plain RV32IMC — the core is a superset, so no `xw` support is
-needed in the emitter).
+RTC alarms, and the RV32 native emitter (which can be enabled later targeting
+plain RV32IMC — the core is a superset, so no `xw` support is needed in the
+emitter).
 
 ## Accelerated framebuf
 

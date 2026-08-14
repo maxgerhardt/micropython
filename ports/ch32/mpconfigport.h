@@ -210,8 +210,26 @@ uint64_t ch32_rng_u64(void);
 /* mbedtls allocates through m_tracked_calloc/free so its buffers are visible
  * to the GC and released on soft reset; without this the link fails outright. */
 #define MICROPY_TRACKED_ALLOC           (MICROPY_SSL_MBEDTLS)
+
+/* hashlib: md5, sha1, sha256. The module itself needs enabling because it
+ * defaults to EXTRA_FEATURES and this port is CORE_FEATURES -- without this
+ * line the two algorithm selections below choose the contents of a module that
+ * is never built, which is what they did until now.
+ *
+ * Nearly free: extmod/modhashlib.c calls mbedtls's implementations when
+ * MICROPY_SSL_MBEDTLS is set, and TLS has already linked all three. There is
+ * no sha384 or sha512 to enable -- modhashlib.c implements md5, sha1 and
+ * sha256 and nothing else, so those would be new code rather than a flag,
+ * even though mbedtls's SHA-512 is in the image for the TLS ciphersuites. */
+#define MICROPY_PY_HASHLIB              (1)
 #define MICROPY_PY_HASHLIB_SHA1         (1)
 #define MICROPY_PY_HASHLIB_SHA256       (1)
+
+/* cryptolib comes in with MICROPY_PY_SSL and its AES runs on the ECDC block,
+ * because modcryptolib.c calls mbedtls_aes_crypt_ecb/_cbc and MBEDTLS_AES_ALT
+ * points those at ports/ch32/mbedtls/aes_alt.c. CTR is the one mode that is
+ * off by default. */
+#define MICROPY_PY_CRYPTOLIB_CTR        (1)
 
 // Networking: lwip on the on-chip Ethernet MAC and 100M PHY.
 #define MICROPY_PY_NETWORK              (1)
