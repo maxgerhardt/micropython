@@ -31,11 +31,16 @@ gc.collect()
 free = gc.mem_free()
 total = free + gc.mem_alloc()
 
-# Both areas are counted. Area 1 alone is about 162K and area 2 adds 144K, less
-# each area's allocation tables -- so anything near 300K proves the second area
-# was added, and anything near 160K proves gc_add() never ran.
+# Both areas are counted. Area 1 is the ~162K that fits in DTCM and area 2 is
+# whatever is left of the shared region, so the test is that the total is
+# clearly more than area 1 alone: near 162K means gc_add() never ran.
+#
+# The threshold is deliberately expressed against area 1 rather than as an
+# absolute. Area 2 has been cut repeatedly -- 144K, then 96K, then 88K, and
+# 56K once RAM_CODE grew for the MP3 decoder -- and a fixed ">240K" written
+# when it was 144K failed for a shrinking heap rather than for a broken one.
 print("heap total", total, "free", free)
-check("heap spans both areas", total > 240 * 1024)
+check("heap spans both areas", total > 190 * 1024)
 
 # A small allocation on a collected heap goes to area 1: gc_alloc() searches
 # from the front of the area list and area 1 has room.

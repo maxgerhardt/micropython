@@ -10,9 +10,14 @@
  * alias used by the linker scripts must not be passed to it.
  *
  *   0x08000000   64K  V3F boot stub
- *   0x08010000  512K  V5F MicroPython image
- *   0x08090000  384K  FAT volume            <- this region
+ *   0x08010000  640K  V5F MicroPython image
+ *   0x080B0000  256K  FAT volume            <- this region
  *   0x080F0000        ValidAddrEnd_Dual, end of the 960 KB user area
+ *
+ * The volume gave up 128K to the image when the MP3 decoder went in. Moving
+ * this boundary reformats the internal filesystem, because every sector of it
+ * shifts; that is survivable here in a way it would not be on a board without
+ * an SD card, which is where anything worth keeping now lives.
  *
  * CH32_FLASH_FS_BASE must equal the end of the FLASH region in the V5F linker
  * script, boards/CH32H417QEU6_V5F/ch32h417_v5f.ld. The two are separate
@@ -27,8 +32,8 @@
  * nothing about the filesystem; it is now cut off here, so an image that no
  * longer fits fails the link instead.
  */
-#define CH32_FLASH_FS_BASE      (0x08090000u)
-#define CH32_FLASH_FS_SIZE      (0x60000u)
+#define CH32_FLASH_FS_BASE      (0x080B0000u)
+#define CH32_FLASH_FS_SIZE      (0x40000u)
 #define CH32_FLASH_PAGE_SIZE    (0x2000u)     /* erase granularity at DBMODE=1 */
 #define CH32_FLASH_BLOCK_SIZE   (512u)        /* logical sector seen by FAT */
 #define CH32_FLASH_NUM_BLOCKS   (CH32_FLASH_FS_SIZE / CH32_FLASH_BLOCK_SIZE)

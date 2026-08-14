@@ -21,7 +21,7 @@ MEMORY
 	   volume starts exactly where this stops. It used to run to the end of the
 	   chip, which let the image grow silently into the volume -- see the
 	   comment in flash.h. Overflowing this region is now a link error. */
-	FLASH (rx)     : ORIGIN = 0x00010000, LENGTH = 512K
+	FLASH (rx)     : ORIGIN = 0x00010000, LENGTH = 640K
 	/* Shared region: .text/.rodata, copied from flash by startup. Runs at HCLK
 	   (100 MHz) rather than the V5F core clock; task 6 evaluates alternatives. */
 	ITCM (xrw)     : ORIGIN = 0x200A0000, LENGTH = 128K
@@ -32,28 +32,29 @@ MEMORY
 
 	   History, because it has only gone one way: 240K until mbedtls (+70K of
 	   TLS), 320K until the RV32 emitter (+25K of backend), then 336K, and now
-	   368K for machine.CAN and machine.Timer. Every increase came out of
-	   HEAP2. The next lever is not this boundary -- it is moving cold code
-	   (X.509 parsing, oofatfs, USB descriptors) back to execute from flash,
-	   which is a quarter of the speed but is code that runs once. */
-	RAM_CODE (xrw) : ORIGIN = 0x20100000, LENGTH = 368K
+	   368K for machine.CAN and machine.Timer, and 400K for the MP3 decoder.
+	   Every increase came out of HEAP2, and that remains the lever: moving
+	   cold code to flash was tried for the decoder and is written up in the
+	   .coldcode section below, where the measurement is. Flash execution is
+	   far worse than the 4x clock ratio implies for anything loop-shaped. */
+	RAM_CODE (xrw) : ORIGIN = 0x20100000, LENGTH = 400K
 	/* USBFS DMA cannot reach DTCM, so endpoint buffers live here, in
 	   the shared region on the system bus. */
-	USB_RAM (xrw)  : ORIGIN = 0x2015C000, LENGTH = 16K
+	USB_RAM (xrw)  : ORIGIN = 0x20164000, LENGTH = 16K
 	/* Same reason as USB_RAM: the Ethernet DMA is on the system bus and cannot
 	   reach DTCM either. Descriptors and MAC frame buffers live here. */
-	ETH_RAM (xrw)  : ORIGIN = 0x20160000, LENGTH = 32K
+	ETH_RAM (xrw)  : ORIGIN = 0x20168000, LENGTH = 32K
 	/* The SDMMC bounce buffers, two runs of eight blocks. Its own region
 	   rather than a corner of RAM_CODE, which has no room for it: the generic
 	   toolchain emits ~15K more and overflowed by 128 bytes with these here.
 	   The address itself does not matter to the DMA -- it reads and writes
 	   RAM_CODE, ETH_RAM and this equally -- so this is only about space. */
-	SD_RAM (rw)    : ORIGIN = 0x20168000, LENGTH = 8K
+	SD_RAM (rw)    : ORIGIN = 0x20170000, LENGTH = 8K
 	/* The rest of the shared area, out to its end at 0x20180000. Nothing else
 	   had claimed it, so it goes to the GC as a second heap area -- see
 	   MICROPY_GC_SPLIT_HEAP and the gc_add() call in main.c. It takes the heap
-	   from the 162K that fits in DTCM to about 250K. */
-	HEAP2 (rw)     : ORIGIN = 0x2016A000, LENGTH = 88K
+	   from the 162K that fits in DTCM to about 218K. */
+	HEAP2 (rw)     : ORIGIN = 0x20172000, LENGTH = 56K
 	/* DTCM: zero-wait at the V5F core clock. Holds .data/.bss/stack/heap. */
 	RAM_LOAD (xrw) : ORIGIN = 0x200C0000, LENGTH = 256
 	RAM (xrw)      : ORIGIN = (0x200C0000+256), LENGTH = (256K-256)
@@ -119,12 +120,42 @@ SECTIONS
     } >ITCM AT>FLASH
     PROVIDE(_itcm_lma = LOADADDR(.itcm_text));
 
-    .highcodelalign :
-    {       
+    /* Cold code, left in flash and executed in place.
+     *
+     * Everything else is copied into RAM_CODE at boot because flash is far
+     * slower. Only code whose slowness cannot be felt belongs here.
+     *
+     * mbedtls was tried here and taken back out. Its asymmetric half looked
+     * like the ideal candidate -- 54K of big-number, elliptic-curve, RSA and
+     * X.509 work that runs once per connection and never per packet -- but
+     * measured against a live server it took an HTTPS GET from 804 ms to
+     * 8604 ms, better than 10x rather than the 4x the clock ratio suggests,
+     * and one of the two test servers gave up on the handshake entirely.
+     * Bignum and EC code is tight loops and little else, so every instruction
+     * fetch pays full flash latency with nothing to hide it behind. If more
+     * RAM_CODE is ever needed, take it from HEAP2 as below rather than from
+     * anything that runs in a loop.
+     *
+     * mDNS is what is left: it answers name queries and is idle otherwise.
+     *
+     * This must come before .highcode, whose wildcards would otherwise claim
+     * these objects first -- the earliest matching output section wins.
+     */
+    .coldcode :
+    {
         . = ALIGN(4);
-        PROVIDE(_highcode_lma = .); 
-    } >FLASH AT>FLASH 
-    
+        PROVIDE(_coldcode_start = .);
+        */lwip/src/apps/mdns/*.o(.text .text.* .rodata .rodata*)
+        . = ALIGN(4);
+        PROVIDE(_coldcode_end = .);
+    } >FLASH AT>FLASH
+
+    .highcodelalign :
+    {
+        . = ALIGN(4);
+        PROVIDE(_highcode_lma = .);
+    } >FLASH AT>FLASH
+
     .highcode : 
     {
         . = ALIGN(4);
