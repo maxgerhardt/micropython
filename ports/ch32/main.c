@@ -55,6 +55,10 @@ void machine_uart_deinit_all(void);
 extern uint8_t _heap_start;
 extern uint8_t _heap_end;
 extern uint8_t _eusrstack;
+#if MICROPY_GC_SPLIT_HEAP
+extern uint8_t _sheap2;
+extern uint8_t _eheap2;
+#endif
 
 #if MICROPY_HW_BOOT_DELAY_LOOPS
 static void boot_delay(volatile uint32_t n) {
@@ -176,11 +180,21 @@ int main(void) {
     mp_stack_set_limit(24 * 1024);
 
     size_t heap_size = (size_t)(&_heap_end - &_heap_start);
+    #if MICROPY_GC_SPLIT_HEAP
+    heap_size += (size_t)(&_eheap2 - &_sheap2);
+    #endif
 
     // Outer loop: a soft reset (Ctrl-D) re-initialises the heap and VM rather
     // than resetting the chip, so the console session survives.
     for (;;) {
         gc_init(&_heap_start, &_heap_end);
+        #if MICROPY_GC_SPLIT_HEAP
+        /* Inside the loop, not before it: gc_init() rebuilds the area list
+         * from scratch and drops every area that was added, so a soft reset
+         * would otherwise silently lose the second region and come back with
+         * a heap less than half the size it had. */
+        gc_add(&_sheap2, &_eheap2);
+        #endif
         mp_init();
 
         /* mp_init() leaves sys.path as ['', '.frozen'], which does not include

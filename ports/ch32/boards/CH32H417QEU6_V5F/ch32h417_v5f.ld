@@ -16,15 +16,17 @@ PROVIDE( _stack_size = __stack_size );
 
 MEMORY
 {
-	/* Must match CH32_V5F_FLASH_ORIGIN in ../../coreboot.mk. */
-	FLASH (rx)     : ORIGIN = 0x00010000, LENGTH = 896K
+	/* ORIGIN must match CH32_V5F_FLASH_ORIGIN in ../../coreboot.mk, and the end
+	   of this region must match CH32_FLASH_FS_BASE in ../../flash.h: the FAT
+	   volume starts exactly where this stops. It used to run to the end of the
+	   chip, which let the image grow silently into the volume -- see the
+	   comment in flash.h. Overflowing this region is now a link error. */
+	FLASH (rx)     : ORIGIN = 0x00010000, LENGTH = 512K
 	/* Shared region: .text/.rodata, copied from flash by startup. Runs at HCLK
 	   (100 MHz) rather than the V5F core clock; task 6 evaluates alternatives. */
 	ITCM (xrw)     : ORIGIN = 0x200A0000, LENGTH = 128K
 	/* 320K, raised from 240K when mbedtls arrived: TLS adds about 70K of code
-	   and overflowed the old region outright. The shared area runs to
-	   0x20180000, so this and the two DMA regions below still leave 144K
-	   unclaimed. */
+	   and overflowed the old region outright. */
 	RAM_CODE (xrw) : ORIGIN = 0x20100000, LENGTH = 320K
 	/* USBFS DMA cannot reach DTCM, so endpoint buffers live here, in
 	   the shared region on the system bus. */
@@ -32,6 +34,11 @@ MEMORY
 	/* Same reason as USB_RAM: the Ethernet DMA is on the system bus and cannot
 	   reach DTCM either. Descriptors and MAC frame buffers live here. */
 	ETH_RAM (xrw)  : ORIGIN = 0x20154000, LENGTH = 32K
+	/* The rest of the shared area, out to its end at 0x20180000. Nothing had
+	   claimed it, so it goes to the GC as a second heap area -- see
+	   MICROPY_GC_SPLIT_HEAP and the gc_add() call in main.c. It nearly doubles
+	   the heap, from the 162K that fits in DTCM to about 306K. */
+	HEAP2 (rw)     : ORIGIN = 0x2015C000, LENGTH = 144K
 	/* DTCM: zero-wait at the V5F core clock. Holds .data/.bss/stack/heap. */
 	RAM_LOAD (xrw) : ORIGIN = 0x200C0000, LENGTH = 256
 	RAM (xrw)      : ORIGIN = (0x200C0000+256), LENGTH = (256K-256)
@@ -216,6 +223,22 @@ SECTIONS
 		. = ALIGN(32);
 		PROVIDE( _eethram = . );
 	} >ETH_RAM
+
+	/* Second GC heap area, handed to gc_add() after every gc_init(). Nothing
+	 * is copied here at boot and nothing clears it: the GC writes its own area
+	 * header and allocation tables into the front of it each time.
+	 *
+	 * Spelled as a section covering the whole region rather than as two bare
+	 * symbol assignments so that anything later placed in HEAP2 overflows the
+	 * region and fails the link, instead of quietly sharing memory with the
+	 * heap and being overwritten on the first allocation. */
+	.heap2 (NOLOAD) :
+	{
+		. = ALIGN(8);
+		PROVIDE( _sheap2 = . );
+		. = ORIGIN(HEAP2) + LENGTH(HEAP2);
+		PROVIDE( _eheap2 = . );
+	} >HEAP2
 
 	.dalign :
 	{

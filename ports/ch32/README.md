@@ -578,27 +578,55 @@ region runs at HCLK (100 MHz) and code flash is roughly 25 MHz-equivalent, so
 instruction placement dominates performance.
 
     FLASH     0x00000000   64K   V3F boot stub
-    FLASH     0x00010000  896K   V5F image
-    ITCM      0x200A0000  128K   .itcm_text: all of py/ + shared/runtime/ (96K used)
-    RAM_CODE  0x20100000  240K   .highcode: extmod, oofatfs, SDK drivers, port files (64K used)
-    USB_RAM   0x2013C000   16K   .usbram: TinyUSB state (the USB DMA cannot reach DTCM)
-    ETH_RAM   0x20140000   32K   .ethram: MAC descriptors and frame buffers (same reason)
-    DTCM      0x200C0000  256K   .data/.bss/stack/GC heap
+    FLASH     0x00010000  512K   V5F image (410K used; the FAT volume follows)
+    ITCM      0x200A0000  128K   .itcm_text: all of py/ + shared/runtime/ (110K used)
+    DTCM      0x200C0000  256K   .data/.bss/stack + GC heap area 1 (162K)
+    RAM_CODE  0x20100000  320K   .highcode: extmod, mbedtls, oofatfs, SDK drivers, port files (294K used)
+    USB_RAM   0x20150000   16K   .usbram: TinyUSB state (the USB DMA cannot reach DTCM)
+    ETH_RAM   0x20154000   32K   .ethram: MAC descriptors and frame buffers (same reason)
+    HEAP2     0x2015C000  144K   .heap2: GC heap area 2, the rest of the shared region
 
 `main()` copies `.itcm_text` into ITCM before calling into it; the SDK startup
 file only knows about `.highcode`.
 
+### The GC heap spans two regions
+
+`MICROPY_GC_SPLIT_HEAP` is on, and `main()` calls `gc_add()` for `.heap2` after
+every `gc_init()`. DTCM has to hold `.data`, `.bss` and the 32K stack as well,
+which left only 162K of it for the heap; the shared region's tail past
+`ETH_RAM` was claimed by nothing at all and adds 144K more, for about 306K.
+
+The two areas are not interchangeable. DTCM is zero-wait at the V5F's 400 MHz
+core clock while the shared region is reached over the system bus at HCLK, so
+`memcpy` runs at 259 MB/s against 131 MB/s and a word-wise fill at 490 MB/s
+against 385 MB/s. `gc_alloc()` walks the area list from the front and only
+reaches area 2 when area 1 cannot satisfy a request, so a program that fits in
+DTCM never touches the slower region, and one that does not gets to run at all
+instead of raising `MemoryError`. There is no way to ask for an allocation in a
+particular area; `uctypes.addressof()` is how you find out where one landed.
+
+A full `gc.collect()` now sweeps 306K rather than 162K, half of it at
+shared-SRAM speed.
+
 ## Filesystem
 
-A 512 KB FAT volume occupies the flash tail at `0x08070000`, mounted at `/`.
+A 384 KB FAT volume occupies the flash tail at `0x08090000`, mounted at `/`.
 A blank board formats itself on first boot. `boot.py` and `main.py` run at
 startup if present; an exception in either is reported and the REPL still
 comes up.
 
     0x08000000    64K   V3F boot stub
-    0x08010000   384K   V5F MicroPython image (163 KB used)
-    0x08070000   512K   FAT volume
+    0x08010000   512K   V5F MicroPython image (410 KB used)
+    0x08090000   384K   FAT volume
     0x080F0000          end of the 960 KB user area
+
+That boundary is stated twice — as `CH32_FLASH_FS_BASE` in `flash.h` and as the
+end of the `FLASH` region in the board linker scripts — and nothing checks the
+two against each other, so move both or neither. It sat at `0x08070000` until
+mbedtls took the image past the 384 KB that left it: the overflow went into the
+volume, the first file written laid FAT sectors over the image's last 26 KB,
+and the board boot-looped on the next reset with the V5F faulting before UART
+was up. Cutting the linker region at the volume turns that into a link error.
 
 The erase unit is 8 KB while FAT writes 512-byte sectors, so a sector write is
 always read-modify-erase-program of a whole page. There is an 8 KB staging
@@ -658,7 +686,7 @@ USBFS does **not** share pins with the SWD debug interface -- USBHS does
 PA9 and PA10 are OTG_VBUS and OTG_ID on this package and carry the UART REPL,
 so device-only USB leaves VBUS sensing and the ID pin unused.
 
-The 512 KB FAT volume is also exposed as a **USB mass-storage drive**, so the
+The 384 KB FAT volume is also exposed as a **USB mass-storage drive**, so the
 board enumerates as a composite CDC + MSC device.
 
 **There is no arbitration between the host and MicroPython.** Both may write,

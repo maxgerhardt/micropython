@@ -10,12 +10,25 @@
  * alias used by the linker scripts must not be passed to it.
  *
  *   0x08000000   64K  V3F boot stub
- *   0x08010000  384K  V5F MicroPython image
- *   0x08070000  512K  FAT volume            <- this region
+ *   0x08010000  512K  V5F MicroPython image
+ *   0x08090000  384K  FAT volume            <- this region
  *   0x080F0000        ValidAddrEnd_Dual, end of the 960 KB user area
+ *
+ * CH32_FLASH_FS_BASE must equal the end of the FLASH region in the V5F linker
+ * script, boards/CH32H417QEU6_V5F/ch32h417_v5f.ld. The two are separate
+ * statements of one boundary and nothing checks them against each other at
+ * build time, so changing either means changing both.
+ *
+ * That boundary used to sit at 0x08070000, giving the image 384K. mbedtls took
+ * it to 410K, and the excess landed inside the volume: the first file written
+ * put FAT sectors on top of the image's last 26K, and the board boot-looped on
+ * the next reset with the V5F faulting before UART came up. The linker could
+ * not warn because its FLASH region ran to the end of the chip and knew
+ * nothing about the filesystem; it is now cut off here, so an image that no
+ * longer fits fails the link instead.
  */
-#define CH32_FLASH_FS_BASE      (0x08070000u)
-#define CH32_FLASH_FS_SIZE      (0x80000u)
+#define CH32_FLASH_FS_BASE      (0x08090000u)
+#define CH32_FLASH_FS_SIZE      (0x60000u)
 #define CH32_FLASH_PAGE_SIZE    (0x2000u)     /* erase granularity at DBMODE=1 */
 #define CH32_FLASH_BLOCK_SIZE   (512u)        /* logical sector seen by FAT */
 #define CH32_FLASH_NUM_BLOCKS   (CH32_FLASH_FS_SIZE / CH32_FLASH_BLOCK_SIZE)

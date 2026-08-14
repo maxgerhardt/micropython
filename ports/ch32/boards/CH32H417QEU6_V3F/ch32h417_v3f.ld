@@ -6,8 +6,11 @@ PROVIDE( _stack_size = __stack_size );
 
 MEMORY
 {
-	/* Code flash alias at 0, full 960K user area. */
-	FLASH (rx)     : ORIGIN = 0x00000000, LENGTH = 960K
+	/* Code flash alias at 0. Stops at 0x90000, where the FAT volume begins:
+	   CH32_FLASH_FS_BASE in ../../flash.h states the same boundary, and this
+	   region has to end there or an oversized image is written straight over
+	   the volume with nothing to warn about it. */
+	FLASH (rx)     : ORIGIN = 0x00000000, LENGTH = 576K
 	/* Zero-wait shared SRAM, first half: all .text/.rodata, copied by startup. */
 	RAM_CODE (xrw) : ORIGIN = 0x20100000, LENGTH = 256K
 	/* 256-byte .load stub that performs the flash->RAM copy. */
