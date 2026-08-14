@@ -45,6 +45,10 @@ void machine_uart_deinit_all(void);
 #include "machine_counter.h"
 #include "machine_encoder.h"
 #include "machine_rtc.h"
+#include "machine_vio18.h"
+
+/* Defined in machine_sdcard.c; nothing else in the port needs its type. */
+void machine_sdcard_deinit_all(void);
 #include "machine_timer.h"
 #include "machine_wdt.h"
 #include "mphalport.h"
@@ -142,6 +146,12 @@ int main(void) {
     machine_wdt_reset_cause_init();
 
     mp_hal_init();
+    /* After the timebase, because the rail needs a settling delay, and before
+     * any pin is configured: most of this chip's pads are on VIO18, whose LDO
+     * powers up at 1.2 V, and this raises it to 3.3 V so that every pin
+     * drives what a MicroPython program expects it to. The REPL UART is on
+     * VDDIO and does not care either way. */
+    ch32_vio18_init();
     uart_init(MICROPY_HW_UART_REPL_BAUD);
     /* After the timebase and the console, not before: starting the RTC waits on
      * an oscillator with a timeout, and a timeout needs a clock to measure. Run
@@ -263,6 +273,10 @@ int main(void) {
         machine_timer_deinit_all();
         machine_counter_deinit_all();
         machine_encoder_deinit_all();
+
+        /* And the card, whose object is about to be freed while the
+         * controller would otherwise still be clocking a selected card. */
+        machine_sdcard_deinit_all();
 
         /* Same for the analog outputs, which otherwise hold their last voltage
          * indefinitely. */

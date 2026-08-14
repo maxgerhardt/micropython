@@ -1130,6 +1130,122 @@ then hunts for it. Measured both ways on a strapped pair — with a pull-up,
 `reset()` is `False` and `scan()` is `[]`; floating, `reset()` is `True` every
 time.
 
+## Pin supply voltage — VIO18
+
+Most of this chip's pads are not on VDDIO. They are on a second supply called
+VIO18, and the datasheet does not say in text which pin belongs to which — the
+domains are colour-coded in the package drawing and nothing survives PDF text
+extraction. Measured, the split puts I2C2, SPI2, I2S2, I2S3, SDMMC, LTDC and
+the FSMC on VIO18, and that used to look like a hardware limit: those pins sat
+at 1.2 V, far below what a 3.3 V part reads as a one.
+
+It is not a limit. VIO18 is an LDO fed from VDDIO and `PWR_CTLR` picks its
+output, so `machine.vio18()` sets it:
+
+    machine.vio18()        # -> 3300, the millivolts it is at now
+    machine.vio18(1800)    # 1200, 1800, 2500, 3300, or 0 to power it down
+
+**The port selects 3.3 V at boot**, so every pin drives what a MicroPython
+program expects. Measured on PC0–PC3, driven high and read back through their
+own ADC channels, with PA5/PA6 on VDDIO as the control:
+
+| VSEL | PC0 | PC1 | PC2 | PC3 | PA5 | PA6 |
+|---|---|---|---|---|---|---|
+| 1.2 V | 1.310 | 1.310 | 1.310 | 1.310 | 3.300 | 3.300 |
+| 1.8 V | 1.821 | 1.820 | 1.820 | 1.819 | 3.300 | 3.300 |
+| 2.5 V | 2.532 | 2.532 | 2.532 | 2.532 | 3.300 | 3.300 |
+| 3.3 V | 3.300 | 3.300 | 3.300 | 3.300 | 3.300 | 3.300 |
+
+Two things worth knowing. Anything wired to a VIO18 pin now sees 3.3 V rather
+than 1.2 V, so a board carrying 1.8 V parts on those pins must call
+`machine.vio18(1800)` before using them. And the rail rises fast but falls
+slowly: nothing discharges it except leakage, so a 3.3 V → 1.2 V step is still
+passing through 1.7 V milliseconds later.
+
+WCH's own note says permanent 3.3 V operation wants VIO18 shorted to VDDIO on
+the board — R11 beside the VIO18 pin is the unpopulated 0 Ω for exactly that —
+and the LDO then disabled to save its quiescent current. Running the LDO at
+3.3 V from a 3.3 V input instead needs no soldering and holds 3.300 V.
+
+## SD cards
+
+`machine.SDCard` drives the SDMMC controller, and the object is a block device,
+so it mounts directly:
+
+    import os, machine
+
+    sd = machine.SDCard()              # 1-bit, 20 MHz
+    os.mount(sd, "/sd")
+    print(os.listdir("/sd"))
+
+    machine.SDCard(width=4, freq=25000000)
+
+Wiring is the controller's default mapping. A plain SPI microSD breakout works
+unmodified — its "MOSI" is the card's CMD and its "MISO" is the card's DAT0:
+
+| Card | Pin | Breakout label |
+|---|---|---|
+| CLK | PC12 | CLK |
+| CMD | PD2 | MOSI |
+| DAT0 | PC8 | MISO |
+| DAT3 | PC11 | CS |
+| DAT1 / DAT2 | PC9 / PC10 | (4-bit only) |
+
+Every one of those pins is on VIO18, so this depends on the section above; the
+constructor refuses to run below 2.5 V rather than time out somewhere in the
+card protocol.
+
+Measured on a 16 GB SDHC card, 64 KB sequential, 1-bit:
+
+| SDCLK | write | read |
+|---|---|---|
+| 390 kHz | 46 KB/s | 48 KB/s |
+| 2.1 MHz | 237 KB/s | 253 KB/s |
+| 20 MHz | 1509 KB/s | 2176 KB/s |
+| 25 MHz | 1628 KB/s | 2646 KB/s |
+| 50 MHz | 2117 KB/s | 4653 KB/s |
+
+SDCLK is `SYSPLL / div` in high-speed mode and `SYSPLL / div / 64` in low-speed
+mode with `div` in 2…31, so the achievable rates are quantised and the two
+ranges do not meet — at a 400 MHz SYSPLL low mode stops at 3.1 MHz and high mode
+starts at 12.9 MHz. `freq` picks whichever range can reach the request; the
+object's `repr` reports what was actually programmed. 50 MHz worked on this
+card but is past the 25 MHz default-speed limit, which properly needs a CMD6
+switch into high-speed mode that this driver does not do.
+
+Four things about this controller cost real time, and none are guessable:
+
+- **Commands need the NCC gap.** The SD specification requires eight clock
+  cycles between a response and the next command and the controller does not
+  insert them. Without it, CMD55 issued straight after CMD8 reports a
+  response-index error with no CMDDONE and the previous response still in the
+  register. It reproduced every time — and vanished when a debug `printf` was
+  added between commands, which is what pointed at spacing rather than at the
+  command.
+- **`BLOCK_CFG` must be written as zero before it is written with the real
+  geometry.** It is the reset of the block counter, not idempotent
+  configuration.
+- **A read arms before its command and a write arms after it.** A read has to
+  be ready for data that arrives as soon as the card answers; arming a write
+  the same way makes the command itself time out.
+- **`DMA_BEG1` only reloads the engine's pointer when the value changes.**
+  Writing the address it already holds still starts the transfer, but from
+  where the last one stopped — so a second write from the same buffer sends the
+  512 bytes that followed it. The card stores that, reports no error, and reads
+  it back faithfully. The driver alternates between two bounce buffers so the
+  register always changes.
+
+Everything goes through those bounce buffers rather than the caller's memory:
+this DMA cannot reach DTCM, which is where `.bss` and the whole first GC heap
+area live, so a direct path would be code that never runs. They are eight
+blocks each, so a long transfer still uses multi-block commands.
+
+The vendor's `EVT/EXAM/SDMMC/SDMMC_SD` example is worth reading before changing
+any of this — it is where the arming order and the per-block `WRITE_CONT` kick
+for multi-block writes come from. It also enables the SWPMI clock and sets
+`SWPMI->OR` bit 0 as part of SD pin setup, which is undocumented and unrelated
+on its face but which the controller needs.
+
 ## Capacitive touch
 
 `machine.TouchPad` uses the TKEY peripheral, which is not a separate block at

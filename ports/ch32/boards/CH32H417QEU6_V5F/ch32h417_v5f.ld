@@ -244,6 +244,18 @@ SECTIONS
 		PROVIDE( _eethram = . );
 	} >ETH_RAM
 
+	/* The SDMMC bounce buffers, 8K of them. Outside .bss for the same reason
+	 * .usbram and .ethram are: that controller's DMA is on the system bus and
+	 * cannot see DTCM, where .bss lives. Unlike those two it can sit in
+	 * RAM_CODE, which has the room -- the DMA reads and writes here happily.
+	 * Nothing zeroes it and nothing needs to: every use fills it first. */
+	.sdmmcram (NOLOAD) :
+	{
+		. = ALIGN(16);
+		*(.sdmmcram .sdmmcram.*)
+		. = ALIGN(16);
+	} >RAM_CODE
+
 	/* Second GC heap area, handed to gc_add() after every gc_init(). Nothing
 	 * is copied here at boot and nothing clears it: the GC writes its own area
 	 * header and allocation tables into the front of it each time.
