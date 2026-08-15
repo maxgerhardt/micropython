@@ -209,7 +209,12 @@ static uint32_t fill_appbuf_from_ringbuf(machine_i2s_obj_t *self, mp_buffer_info
                 if (self->io_mode == BLOCKING) {
                     // poll the ringbuf until a sample becomes available,  copy into appbuf using the mapping transform
                     while (ringbuf_pop(&self->ring_buffer, app_p + r_to_a_mapping) == false) {
-                        ;
+                        // Yield while waiting. The ring is drained by the DMA
+                        // interrupt, so spinning here is not wrong in itself --
+                        // but a port whose main loop has to be pumped (a USB
+                        // stack, say) is starved by a bare spin, and Ctrl-C
+                        // cannot be delivered either.
+                        mp_event_handle_nowait();
                     }
                     num_bytes_copied_to_appbuf++;
                 } else if (self->io_mode == ASYNCIO) {
@@ -227,7 +232,7 @@ static uint32_t fill_appbuf_from_ringbuf(machine_i2s_obj_t *self, mp_buffer_info
                 if (self->io_mode == BLOCKING) {
                     // poll the ringbuf until a sample becomes available
                     while (ringbuf_pop(&self->ring_buffer, &discard_byte) == false) {
-                        ;
+                        mp_event_handle_nowait();
                     }
                 } else if (self->io_mode == ASYNCIO) {
                     if (ringbuf_pop(&self->ring_buffer, &discard_byte) == false) {
@@ -300,7 +305,7 @@ static uint32_t copy_appbuf_to_ringbuf(machine_i2s_obj_t *self, mp_buffer_info_t
         if (self->io_mode == BLOCKING) {
             // copy a byte to the ringbuf when space becomes available
             while (ringbuf_push(&self->ring_buffer, ((uint8_t *)appbuf->buf)[a_index]) == false) {
-                ;
+                mp_event_handle_nowait();
             }
             a_index++;
         } else if (self->io_mode == ASYNCIO) {
