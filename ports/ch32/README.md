@@ -1235,6 +1235,20 @@ a click), and feeds frames to the DACs.
 Verified against a live 128 kbps station: the ring buffer sits nearly full, so
 the decoder is well ahead and the DAC is what paces the loop.
 
+It reconnects rather than giving up. Losing a stream is routine -- servers
+recycle clients, balancers move you, links flap -- so a dropped connection
+backs off (1 s, doubling to 30 s) and redials, resolving the playlist again in
+case the balancer hands out a different server. Waiting for the network is part
+of the same loop, so a board that boots before its switch does retries instead
+of refusing to start. The DAC stays up across all of it: the ring still holds a
+couple of hundred milliseconds when the socket dies, and silence is pushed in
+behind it so an outage is heard as a gap rather than as the last fifth of a
+second looping.
+
+Exercised by killing and restarting a local stream server mid-play: the board
+logged the reset, backed off twice, reconnected and carried on, and kept the
+same `AudioOut` throughout.
+
 ## SD cards
 
 `machine.SDCard` drives the SDMMC controller, and the object is a block device,
