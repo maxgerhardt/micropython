@@ -18,6 +18,7 @@
 #include "extmod/modmachine.h"
 
 #include "machine_pin.h"
+#include "irq.h"
 
 #define I2C_DEFAULT_FREQ    (400000)
 #define I2C_DEFAULT_TIMEOUT (50000)   /* microseconds for one byte-level step */
@@ -30,6 +31,10 @@ typedef struct _machine_i2c_obj_t {
     uint8_t sda;
     uint8_t af;
     uint32_t timeout_us;
+    /* Meaningful only while this object is the one machine_i2c_async points
+     * at: what the interrupt still has to do when the data phase ends. */
+    bool xfer_read;
+    bool xfer_stop;
 } machine_i2c_obj_t;
 
 /* Pin options taken from the datasheet's pin table. Only the pairs where both
@@ -68,7 +73,40 @@ static const machine_i2c_pins_t machine_i2c_pin_options[] = {
     { 4, PIN_ID(PORT_F, 12), PIN_ID(PORT_F, 13), 2 },
 };
 
+/* DMA1 channel 6 carries the data phase. Channel 1 is AudioOut, 2 and 3 are
+ * SPI, 4 and 5 are I2S; 7 and 8 stay free. One channel is enough where SPI
+ * needs two, because I2C is half duplex -- only the request routing changes
+ * between a read and a write. */
+#define I2C_DMA_CHANNEL       (DMA1_Channel6)
+#define I2C_DMA_MUX_CHANNEL   (DMA_MuxChannel6)
+#define I2C_DMA_IRQN          (DMA1_Channel6_IRQn)
+#define I2C_DMA_FLAGS         ((uint32_t)0x00F00000)   /* channel 6 nibble */
+
+/* DMAMUX request numbers, reference manual table 10-2: I2C1_TX is 73 and
+ * I2C1_RX 74, with each further bus two higher. */
+#define I2C_DMA_TX_REQ(id)    (71 + 2 * (id))
+#define I2C_DMA_RX_REQ(id)    (72 + 2 * (id))
+
+/* CNTR is 16 bits. A longer buffer stays on the polled path rather than being
+ * chunked: the receive tail rules below make splitting a transfer far more
+ * delicate than it is worth for a length no I2C device asks for. */
+#define I2C_DMA_MAX_LEN       (65535)
+
 static machine_i2c_obj_t machine_i2c_obj[4];
+
+/* The transfer in flight, or NULL. */
+static machine_i2c_obj_t *machine_i2c_async;
+
+/* The irq() handler, in a root pointer rather than in the object: these
+ * objects are static, so the collector never traces them and a callback kept
+ * there could be collected while still in use. */
+#define machine_i2c_handler(self) (MP_STATE_PORT(machine_i2c_irq_handler)[(self)->id - 1])
+
+/* Event interrupts are not evenly spaced, so they are listed rather than
+ * calculated. */
+static const IRQn_Type machine_i2c_ev_irqn[4] = {
+    I2C1_EV_IRQn, I2C2_EV_IRQn, I2C3_EV_IRQn, I2C4_EV_IRQn
+};
 
 static I2C_TypeDef *const machine_i2c_regs[4] = { I2C1, I2C2, I2C3, I2C4 };
 
@@ -141,6 +179,165 @@ static int i2c_start_and_address(machine_i2c_obj_t *self, uint16_t addr, bool re
     return i2c_wait(self, I2C_STAR1_ADDR, true);
 }
 
+/* --- interrupt-driven transfers ---
+ *
+ * machine.I2S sets the pattern and this follows it: irq() takes a callback,
+ * and with one set the ordinary readfrom()/writeto()/readfrom_mem() calls
+ * start the transfer and return, with the callback run when it ends.
+ *
+ * Only the data phase moves to the DMA. Addressing stays exactly as it was --
+ * it costs tens of microseconds against milliseconds of data, and keeping it
+ * synchronous means an address NAK still raises where the caller can catch it,
+ * which is what scan() and every "is my sensor plugged in" check rely on. What
+ * is not reported in this mode is a NAK partway through a write: the transfer
+ * ends and the callback still runs.
+ *
+ * The buffers must stay referenced until the callback arrives, because the DMA
+ * is reading or writing them the whole time and nothing here can keep them
+ * alive.
+ */
+static void machine_i2c_finish(machine_i2c_obj_t *self) {
+    machine_i2c_async = NULL;
+    mp_obj_t handler = machine_i2c_handler(self);
+    if (handler != MP_OBJ_NULL) {
+        mp_sched_schedule(handler, MP_OBJ_FROM_PTR(self));
+    }
+}
+
+static void machine_i2c_start_dma(machine_i2c_obj_t *self, size_t len,
+    uint8_t *buf, bool read, bool stop) {
+    I2C_TypeDef *i2c = self->i2c;
+
+    self->xfer_read = read;
+    self->xfer_stop = stop;
+    machine_i2c_async = self;
+
+    RCC_HBPeriphClockCmd(RCC_HBPeriph_DMA1, ENABLE);
+    DMA_MuxChannelConfig(I2C_DMA_MUX_CHANNEL,
+        read ? I2C_DMA_RX_REQ(self->id) : I2C_DMA_TX_REQ(self->id));
+
+    DMA_Cmd(I2C_DMA_CHANNEL, DISABLE);
+    DMA1->INTFCR = I2C_DMA_FLAGS;
+
+    DMA_InitTypeDef init = {0};
+    init.DMA_PeripheralBaseAddr = (uint32_t)&i2c->DATAR;
+    init.DMA_Memory0BaseAddr = (uint32_t)buf;
+    init.DMA_DIR = read ? DMA_DIR_PeripheralSRC : DMA_DIR_PeripheralDST;
+    init.DMA_BufferSize = (uint16_t)len;
+    init.DMA_PeripheralInc = DMA_PeripheralInc_Disable;
+    init.DMA_MemoryInc = DMA_MemoryInc_Enable;
+    init.DMA_PeripheralDataSize = DMA_PeripheralDataSize_Byte;
+    init.DMA_MemoryDataSize = DMA_MemoryDataSize_Byte;
+    init.DMA_Mode = DMA_Mode_Normal;
+    init.DMA_Priority = DMA_Priority_High;
+    init.DMA_M2M = DMA_M2M_Disable;
+    DMA_Init(I2C_DMA_CHANNEL, &init);
+
+    NVIC_ClearPendingIRQ(I2C_DMA_IRQN);
+    NVIC_EnableIRQ(I2C_DMA_IRQN);
+    NVIC_EnableIRQ(machine_i2c_ev_irqn[self->id - 1]);
+    DMA_ITConfig(I2C_DMA_CHANNEL, DMA_IT_TC, ENABLE);
+    DMA_Cmd(I2C_DMA_CHANNEL, ENABLE);
+
+    I2C_DMACmd(i2c, ENABLE);
+    if (read) {
+        /* Makes the controller NACK the byte the DMA counts as its last. This
+         * is why a DMA read is simpler than the polled one rather than harder:
+         * no POS juggling, and no reading the tail out by hand. */
+        I2C_DMALastTransferCmd(i2c, ENABLE);
+    }
+
+    /* Clearing ADDR releases the bus and starts bytes moving, so it goes last:
+     * with the DMA already armed there is no window where a byte can arrive
+     * with nothing waiting to collect it. */
+    i2c_clear_addr(self);
+}
+
+/* Abandon a transfer in flight, from the soft-reset path. The DMA is reading
+ * or writing a Python buffer whose heap is about to be rebuilt, and the root
+ * pointer would otherwise dangle into it -- the same pair of problems
+ * machine_i2s_deinit_all() documents. */
+void machine_i2c_deinit_all(void) {
+    machine_i2c_obj_t *self = machine_i2c_async;
+    if (self != NULL) {
+        DMA_ITConfig(I2C_DMA_CHANNEL, DMA_IT_TC, DISABLE);
+        DMA_Cmd(I2C_DMA_CHANNEL, DISABLE);
+        I2C_DMACmd(self->i2c, DISABLE);
+        I2C_ITConfig(self->i2c, I2C_IT_EVT, DISABLE);
+        i2c_stop(self);
+        machine_i2c_async = NULL;
+    }
+    for (size_t i = 0; i < MP_ARRAY_SIZE(machine_i2c_obj); i++) {
+        MP_STATE_PORT(machine_i2c_irq_handler)[i] = MP_OBJ_NULL;
+    }
+}
+
+void CH32_IRQ_HANDLER(DMA1_Channel6_IRQHandler);
+void DMA1_Channel6_IRQHandler(void) {
+    DMA1->INTFCR = I2C_DMA_FLAGS;
+    machine_i2c_obj_t *self = machine_i2c_async;
+    if (self == NULL) {
+        return;
+    }
+    I2C_TypeDef *i2c = self->i2c;
+
+    DMA_ITConfig(I2C_DMA_CHANNEL, DMA_IT_TC, DISABLE);
+    DMA_Cmd(I2C_DMA_CHANNEL, DISABLE);
+    I2C_DMACmd(i2c, DISABLE);
+
+    if (self->xfer_read) {
+        /* The last byte was NACKed by the controller, so there is nothing left
+         * on the bus for a STOP to truncate. */
+        if (self->xfer_stop) {
+            i2c_stop(self);
+        }
+        machine_i2c_finish(self);
+        return;
+    }
+
+    /* A write is not over when the DMA is: the last byte has only reached
+     * DATAR. Stopping now would cut it off, and waiting here would hold the
+     * core for a byte time -- 90 us at 100 kHz, in interrupt context. Hand the
+     * tail to the event interrupt, which fires on BTF once it has gone. */
+    I2C_ITConfig(i2c, I2C_IT_EVT, ENABLE);
+}
+
+static void machine_i2c_ev_handler(void) {
+    machine_i2c_obj_t *self = machine_i2c_async;
+    if (self == NULL) {
+        return;
+    }
+    I2C_TypeDef *i2c = self->i2c;
+    if (!(i2c->STAR1 & I2C_STAR1_BTF)) {
+        return;
+    }
+    I2C_ITConfig(i2c, I2C_IT_EVT, DISABLE);
+    if (self->xfer_stop) {
+        i2c_stop(self);
+    }
+    machine_i2c_finish(self);
+}
+
+void CH32_IRQ_HANDLER(I2C1_EV_IRQHandler);
+void I2C1_EV_IRQHandler(void) {
+    machine_i2c_ev_handler();
+}
+
+void CH32_IRQ_HANDLER(I2C2_EV_IRQHandler);
+void I2C2_EV_IRQHandler(void) {
+    machine_i2c_ev_handler();
+}
+
+void CH32_IRQ_HANDLER(I2C3_EV_IRQHandler);
+void I2C3_EV_IRQHandler(void) {
+    machine_i2c_ev_handler();
+}
+
+void CH32_IRQ_HANDLER(I2C4_EV_IRQHandler);
+void I2C4_EV_IRQHandler(void) {
+    machine_i2c_ev_handler();
+}
+
 static int machine_i2c_transfer_single(mp_obj_base_t *self_in, uint16_t addr,
     size_t len, uint8_t *buf, unsigned int flags) {
     machine_i2c_obj_t *self = (machine_i2c_obj_t *)self_in;
@@ -148,6 +345,17 @@ static int machine_i2c_transfer_single(mp_obj_base_t *self_in, uint16_t addr,
     bool read = flags & MP_MACHINE_I2C_FLAG_READ;
     bool stop = flags & MP_MACHINE_I2C_FLAG_STOP;
     int ret;
+
+    /* Only a data phase with something in it is worth handing to the DMA. A
+     * zero-length transfer is scan() probing for an ACK, and anything past
+     * CNTR's range would have to be chunked, so both take the ordinary path. */
+    bool async = machine_i2c_handler(self) != MP_OBJ_NULL
+        && len > 0 && len <= I2C_DMA_MAX_LEN;
+    if (async && machine_i2c_async != NULL) {
+        /* Tested before the bus is touched, so a refused transfer leaves the
+         * one already running undisturbed. */
+        mp_raise_OSError(MP_EBUSY);
+    }
 
     ret = i2c_wait_not_busy(self);
     if (ret != 0) {
@@ -163,6 +371,13 @@ static int machine_i2c_transfer_single(mp_obj_base_t *self_in, uint16_t addr,
          * address, so it must not be treated as a bus fault. */
         i2c_stop(self);
         return ret;
+    }
+
+    if (async) {
+        machine_i2c_start_dma(self, len, buf, read, stop);
+        /* The same counts the polled paths return, promised rather than
+         * observed: what the bus does from here is the interrupt's business. */
+        return read ? 0 : (int)len;
     }
 
     if (!read) {
@@ -440,6 +655,39 @@ static mp_obj_t machine_i2c_make_new(const mp_obj_type_t *type, size_t n_args,
     return MP_OBJ_FROM_PTR(self);
 }
 
+/* Set a callback and transfers become non-blocking; pass None and they go
+ * back to blocking. Same call, same meaning, as machine.I2S.irq() and
+ * machine.SPI.irq() on this port.
+ *
+ * The handler is called with the I2C object, from the scheduler rather than
+ * from the interrupt, so it may allocate and raise like any other Python
+ * code. */
+static mp_obj_t machine_i2c_irq(mp_obj_t self_in, mp_obj_t handler) {
+    machine_i2c_obj_t *self = MP_OBJ_TO_PTR(self_in);
+    if (handler != mp_const_none && !mp_obj_is_callable(handler)) {
+        mp_raise_ValueError(MP_ERROR_TEXT("invalid callback"));
+    }
+    machine_i2c_handler(self) = (handler == mp_const_none) ? MP_OBJ_NULL : handler;
+    return mp_const_none;
+}
+static MP_DEFINE_CONST_FUN_OBJ_2(machine_i2c_irq_obj, machine_i2c_irq);
+
+/* Add irq() without restating the dozen methods extmod already provides.
+ *
+ * Unlike SPI, none of the generic I2C method objects are declared in
+ * modmachine.h, so a port cannot assemble its own dictionary out of them. What
+ * it can do is answer for the one name it adds and hand everything else back:
+ * setting dest[1] to MP_OBJ_SENTINEL is how mp_load_method_maybe() is told to
+ * carry on into locals_dict, which is still extmod's own. */
+static void machine_i2c_attr(mp_obj_t self_in, qstr attr, mp_obj_t *dest) {
+    if (dest[0] == MP_OBJ_NULL && attr == MP_QSTR_irq) {
+        dest[0] = MP_OBJ_FROM_PTR(&machine_i2c_irq_obj);
+        dest[1] = self_in;
+        return;
+    }
+    dest[1] = MP_OBJ_SENTINEL;
+}
+
 static const mp_machine_i2c_p_t machine_i2c_p = {
     .transfer = mp_machine_i2c_transfer_adaptor,
     .transfer_single = machine_i2c_transfer_single,
@@ -451,6 +699,9 @@ MP_DEFINE_CONST_OBJ_TYPE(
     MP_TYPE_FLAG_NONE,
     make_new, machine_i2c_make_new,
     print, machine_i2c_print,
+    attr, machine_i2c_attr,
     protocol, &machine_i2c_p,
     locals_dict, &mp_machine_i2c_locals_dict
     );
+
+MP_REGISTER_ROOT_POINTER(mp_obj_t machine_i2c_irq_handler[4]);
