@@ -513,32 +513,74 @@ static machine_i2s_obj_t *mp_machine_i2s_make_new_instance(mp_int_t i2s_id) {
     return self;
 }
 
+/* Stop the hardware, without touching the heap.
+ *
+ * Separated from mp_machine_i2s_deinit() so the soft-reset path can use it:
+ * there the ring buffer is about to be reclaimed wholesale and freeing it
+ * individually would be pointless, but the DMA absolutely must be stopped
+ * first. */
+static void i2s_hw_stop(machine_i2s_obj_t *self) {
+    NVIC_DisableIRQ(self->dma_irqn);
+    DMA_ITConfig(self->dma, DMA_IT_TC | DMA_IT_HT, DISABLE);
+    DMA_Cmd(self->dma, DISABLE);
+    SPI_I2S_DMACmd(self->spi,
+        (self->mode == RX) ? SPI_I2S_DMAReq_Rx : SPI_I2S_DMAReq_Tx, DISABLE);
+    I2S_Cmd(self->spi, DISABLE);
+
+    /* Reset the peripheral through RCC, not just its enable bit.
+     *
+     * I2S_Cmd(DISABLE) stops the block wherever it happens to be in a frame,
+     * and what it leaves behind is not a state the next I2S_Cmd(ENABLE)
+     * recovers from: the first object of a session worked and the second
+     * reset the board. machine_can.c hit the same shape -- a controller that
+     * would not come back from a control-register reset and needed the RCC
+     * one -- so this is the known cure on this part. */
+    uint32_t rcc_bit = (self->i2s_id == 0)
+        ? RCC_HB1Periph_SPI2 : RCC_HB1Periph_SPI3;
+    RCC_HB1PeriphResetCmd(rcc_bit, ENABLE);
+    RCC_HB1PeriphResetCmd(rcc_bit, DISABLE);
+
+    machine_i2s_active[self->i2s_id] = NULL;
+}
+
 static void mp_machine_i2s_deinit(machine_i2s_obj_t *self) {
     // spi doubles as the "is initialised" flag.
     if (self->spi != NULL) {
-        NVIC_DisableIRQ(self->dma_irqn);
-        DMA_ITConfig(self->dma, DMA_IT_TC | DMA_IT_HT, DISABLE);
-        DMA_Cmd(self->dma, DISABLE);
-        SPI_I2S_DMACmd(self->spi,
-            (self->mode == RX) ? SPI_I2S_DMAReq_Rx : SPI_I2S_DMAReq_Tx, DISABLE);
-        I2S_Cmd(self->spi, DISABLE);
-
-        /* Reset the peripheral through RCC, not just its enable bit.
-         *
-         * I2S_Cmd(DISABLE) stops the block wherever it happens to be in a
-         * frame, and what it leaves behind is not a state the next
-         * I2S_Cmd(ENABLE) recovers from: the first object of a session worked
-         * and the second reset the board. machine_can.c hit the same shape --
-         * a controller that would not come back from a control-register reset
-         * and needed the RCC one -- so this is the known cure on this part. */
-        uint32_t rcc_bit = (self->i2s_id == 0)
-            ? RCC_HB1Periph_SPI2 : RCC_HB1Periph_SPI3;
-        RCC_HB1PeriphResetCmd(rcc_bit, ENABLE);
-        RCC_HB1PeriphResetCmd(rcc_bit, DISABLE);
-        machine_i2s_active[self->i2s_id] = NULL;
+        i2s_hw_stop(self);
         m_free(self->ring_buffer_storage);
         self->ring_buffer_storage = NULL;
         self->spi = NULL;
+    }
+}
+
+/* Called from the soft-reset path in main.c. Stopping the hardware is only
+ * half of what this has to do; clearing the root pointer is the other half,
+ * and leaving it set was a genuine crash.
+ *
+ * A soft reset re-runs gc_init(), which discards the whole heap, and mp_init()
+ * does not clear root pointers -- so MP_STATE_PORT(machine_i2s_obj[]) survives
+ * pointing into memory that is now free. The next I2S() takes the "already
+ * exists" branch in mp_machine_i2s_make_new_instance() and adopts that dangling
+ * pointer as the object, without even the mp_obj_malloc that would have set
+ * base.type. Every field then reads back whatever the new program has since
+ * allocated there: self->i2s_id is garbage, so machine_i2s_active[self->i2s_id]
+ * writes off the end of a two-entry array, and the damage surfaces later as an
+ * illegal instruction at a nonsense address.
+ *
+ * It reproduced with a period of two, which is what identified it: a fault
+ * resets the board, so the run after a fault began with a zeroed .bss and a
+ * NULL root pointer and passed, while the run after a *successful* one began
+ * with the stale pointer and died. Iterating MP_STATE_PORT here rather than
+ * machine_i2s_active is the point -- an object the script deinit()ed itself has
+ * already cleared the latter, which is exactly the case that crashed. */
+void machine_i2s_deinit_all(void) {
+    for (uint8_t id = 0; id < MAX_I2S_CH32; id++) {
+        machine_i2s_obj_t *self = MP_STATE_PORT(machine_i2s_obj[id]);
+        if (self != NULL) {
+            mp_machine_i2s_deinit(self);
+            MP_STATE_PORT(machine_i2s_obj[id]) = NULL;
+        }
+        machine_i2s_active[id] = NULL;
     }
 }
 

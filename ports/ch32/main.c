@@ -50,6 +50,9 @@ void machine_uart_deinit_all(void);
 /* Defined in machine_sdcard.c; nothing else in the port needs its type. */
 void machine_sdcard_deinit_all(void);
 void machine_audioout_deinit_all(void);
+#if MICROPY_PY_MACHINE_I2S
+void machine_i2s_deinit_all(void);
+#endif
 #include "machine_timer.h"
 #include "machine_wdt.h"
 #include "mphalport.h"
@@ -282,6 +285,12 @@ int main(void) {
         /* And the audio output, which is a timer, a DMA channel and two
          * analog pins that would otherwise keep converting a freed buffer. */
         machine_audioout_deinit_all();
+
+        #if MICROPY_PY_MACHINE_I2S
+        /* And I2S, whose DMA buffer lives inside the object about to be
+         * freed. Leaving it running corrupts the next program's heap. */
+        machine_i2s_deinit_all();
+        #endif
 
         /* Same for the analog outputs, which otherwise hold their last voltage
          * indefinitely. */
