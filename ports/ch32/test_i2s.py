@@ -1,6 +1,6 @@
-# I2S: machine.I2S on the SAI peripheral.
+# I2S: machine.I2S on the I2S2 peripheral.
 #
-# Wants an I2S microphone on SAI block A -- brought up against an INMP441:
+# Wants an I2S microphone on I2S2 -- brought up against an INMP441:
 #
 #     VDD -> 3V3      SCK -> PB13
 #     GND -> GND      WS  -> PB12
@@ -49,7 +49,8 @@ print("I2S")
 i2s = make()
 check("I2S() constructs", i2s is not None)
 
-# The SAI divider is 6 bits, so the rate is quantised. Ask for the truth.
+# I2SDIV is 8 bits and the rate is SYSCLK/(base*(2*I2SDIV+ODD)), so only
+# certain rates are reachable exactly. Ask for the truth.
 actual = ch32.i2s_actual_rate(0)
 check("actual rate is reported", actual > 0)
 check("actual rate within 1% of request", abs(actual - 16000) < 160)
@@ -102,7 +103,7 @@ if live:
     check("stereo right slot is silent", not any(right))
 i2s.deinit()
 
-# A rate the 6-bit divider cannot reach must be refused, not silently wrong.
+# A rate needing an I2SDIV past 255 must be refused, not silently wrong.
 try:
     bad = make(rate=4000)
     bad.deinit()
@@ -110,7 +111,7 @@ try:
 except ValueError:
     check("unreachable rate raises", True)
 
-# Pins outside the SAI's reach must be refused too.
+# Pins the I2S2 alternate-function map does not reach must be refused too.
 try:
     bad = I2S(
         0,
