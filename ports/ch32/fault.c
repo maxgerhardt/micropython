@@ -21,6 +21,13 @@ static void fault_puthex(uint32_t v) {
 }
 
 static void fault_report(const char *kind) {
+    /* Read ra and sp first, before anything in this function can disturb
+       them: on a jump to a bad address the return address is usually the only
+       record of who jumped, and mepc just says where it landed. */
+    uint32_t ra, sp;
+    __asm volatile ("mv %0, ra" : "=r" (ra));
+    __asm volatile ("mv %0, sp" : "=r" (sp));
+
     uint32_t mcause, mepc, mtval, mstatus;
     __asm volatile ("csrr %0, mcause"  : "=r" (mcause));
     __asm volatile ("csrr %0, mepc"    : "=r" (mepc));
