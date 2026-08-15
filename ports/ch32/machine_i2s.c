@@ -1,24 +1,40 @@
-/* machine.I2S on the SAI peripheral.
+/* machine.I2S on the I2S2/I2S3 peripherals.
  *
- * The hardware half of MicroPython's I2S class; extmod/machine_i2s.c owns the
- * Python-facing behaviour, the ring buffer and the blocking / non-blocking /
- * asyncio modes, and includes this file. A port supplies only the object
- * struct and the four mp_machine_i2s_* entry points at the bottom.
+ * Most of the class is shared code in extmod/machine_i2s.c; this file supplies
+ * the hardware half, named by MICROPY_PY_MACHINE_I2S_INCLUDEFILE.
  *
- * This uses SAI, NOT the peripherals the datasheet calls I2S2 and I2S3, and
- * that is deliberate. I2S2/I2S3 hang off SPI2/SPI3, and every pin either can
- * reach is in the VIO18 domain, which this board runs at about 1.2 V. That
- * cannot meet the input threshold of a 3.3 V audio device, and the device's
- * 3.3 V output into a 1.2 V pad is a large overdrive. SAI block A reaches
- * PE4/PE5/PE6, which are in the 3.3 V domain -- PE2, PE5 and PE6 measured
- * directly, see docs/hw/ch32h417-notes.md. Hence SAI, despite the names.
+ *     from machine import I2S, Pin
+ *     i2s = I2S(0, sck=Pin("PB13"), ws=Pin("PB12"), sd=Pin("PB15"),
+ *               mode=I2S.TX, bits=16, format=I2S.STEREO, rate=44100, ibuf=16384)
+ *     i2s.write(pcm)
+ *
+ * I2S(0) is I2S2 (on SPI2) and I2S(1) is I2S3 (on SPI3). They are independent:
+ * unlike the SAI blocks this replaced, neither is synchronous to the other and
+ * either can be used alone.
+ *
+ * ### Why not the SAI
+ *
+ * This port drove machine.I2S from the SAI until now, because every I2S2/I2S3
+ * pin sits in the VIO18 domain and that measured 1.2 V -- unusable against a
+ * 3.3 V audio device. VIO18 turned out to be a software-set rail (see
+ * machine_vio18.c); at 3.3 V these pins are ordinary 3.3 V pins and the
+ * original objection is void.
+ *
+ * Two things are better here. The rate divider is I2SDIV[7:0] plus an ODD
+ * half-step, against the SAI's 6-bit MCKDIV, so 44.1 kHz lands within 0.16%
+ * (about 3 cents) instead of over 1% (about 21 cents). And the clock source is
+ * selected per peripheral rather than shared with SYSCLK's own tree.
+ *
+ * The SAI driver is kept verbatim at docs/hw/sai-i2s-driver-reference.c.txt,
+ * including its hard-won notes on frame-sync polarity and DMA ordering, for
+ * whenever SAI is worth re-adding as its own class.
  */
 
-/* stdlib.h is for abs(), which extmod/machine_i2s.c uses but does not include a
- * header for. It gets away with it on toolchains that declare abs() as a
- * builtin; CH32_TOOLCHAIN=generic does not, and the implicit declaration is an
- * error there. This file is included into that one, so declaring it here is
- * enough and keeps the fix in the port rather than in shared code. */
+/* stdlib.h and string.h are needed by extmod/machine_i2s.c, which #includes
+ * this file rather than the other way round -- dropping them breaks abs() and
+ * memset() in code that is not even in this file. irq.h supplies
+ * CH32_IRQ_HANDLER, without which the handler declarations below parse as
+ * K&R-style definitions and fail on a strict compiler. */
 #include <stdlib.h>
 #include <string.h>
 
@@ -29,34 +45,34 @@
 #include "irq.h"
 #include "machine_pin.h"
 
-/* Two SAI blocks. Block A is the one broken out to 3.3 V pins here; block B's
- * clock and frame-sync pins are all VIO18, so it is only useful synchronous to
- * A -- sharing A's SCK/FS and needing just its own data pin PE3 -- or with
- * level shifting. */
+/* Two peripherals: I2S2 and I2S3. */
 #define MAX_I2S_CH32 (2)
 
-/* DMA buffer, halved and serviced from the half-transfer and transfer-complete
- * interrupts so the DMA always owns one half while the other is copied. At
- * 48 kHz stereo 32-bit -- the fastest configuration here, 384 kB/s -- each half
- * lasts about 340 us, a comfortable interrupt rate and a small latency. */
+/* 512 bytes, halved into the two ping-pong regions the DMA alternates between.
+ * At 44.1 kHz stereo 16-bit that is 2.9 ms per full buffer, so about 690
+ * interrupts a second -- small enough to hide a garbage collection behind and
+ * large enough not to spend the core in interrupt entry. */
 #define SIZEOF_DMA_BUFFER_IN_BYTES (512)
 #define SIZEOF_HALF_DMA_BUFFER_IN_BYTES (SIZEOF_DMA_BUFFER_IN_BYTES / 2)
 
-/* DMA1 channels 2 and 3 belong to machine.SPI; 4 and 5 are free. One channel
- * per block is enough: an I2S object is either RX or TX, never both. */
-#define I2S_DMA_A_FLAGS      ((uint32_t)0x0000F000)   // channel 4 nibble
-#define I2S_DMA_A_HT         ((uint32_t)0x00004000)
-#define I2S_DMA_B_FLAGS      ((uint32_t)0x000F0000)   // channel 5 nibble
-#define I2S_DMA_B_HT         ((uint32_t)0x00040000)
+/* DMA1 channels 2 and 3 belong to machine.SPI and 1 to machine.AudioOut; 4 and
+ * 5 are ours. One channel per peripheral is enough: an I2S object is either RX
+ * or TX, never both. */
+#define I2S_DMA_A_FLAGS ((uint32_t)0x0000F000)   /* channel 4 nibble */
+#define I2S_DMA_A_HT ((uint32_t)0x00004000)
+#define I2S_DMA_B_FLAGS ((uint32_t)0x000F0000)   /* channel 5 nibble */
+#define I2S_DMA_B_HT ((uint32_t)0x00040000)
 
 /* DMAMUX request numbers, reference manual table 10-2. */
-#define I2S_DMA_REQ_A_TX     (112)
-#define I2S_DMA_REQ_A_RX     (113)
-#define I2S_DMA_REQ_B_TX     (114)
-#define I2S_DMA_REQ_B_RX     (115)
+#define I2S_DMA_REQ_2_TX (65)
+#define I2S_DMA_REQ_2_RX (66)
+#define I2S_DMA_REQ_3_TX (67)
+#define I2S_DMA_REQ_3_RX (68)
 
-// MCKDIV is 6 bits; see i2s_set_rate() for what that costs at low rates.
-#define I2S_MCKDIV_MAX (63)
+/* I2SDIV is 8 bits and must be at least 2; ODD adds the half step, so the
+ * effective divisor 2*I2SDIV+ODD runs from 4 to 511. */
+#define I2S_DIV_MIN (2)
+#define I2S_DIV_MAX (255)
 
 /* In non-blocking mode the ring buffer is drained/filled faster than the DMA
  * moves data, so a slow caller cannot make it underflow. */
@@ -107,7 +123,7 @@ typedef struct _machine_i2s_obj_t {
     int32_t ibuf;
     mp_obj_t callback_for_non_blocking;
     io_mode_t io_mode;
-    SAI_Block_TypeDef *block;
+    SPI_TypeDef *spi;
     DMA_Channel_TypeDef *dma;
     uint32_t dma_flags;
     uint32_t dma_ht_flag;
@@ -121,27 +137,37 @@ typedef struct _machine_i2s_obj_t {
 
 static machine_i2s_obj_t *machine_i2s_active[MAX_I2S_CH32];
 
-/******************************************************************************/
-// Pin tables
-//
-// Only the port E options are offered for block A. The datasheet also allows
-// PC0-PC3, PB2 and PD6, but those are VIO18 pins where a 3.3 V audio device
-// does not work -- listing them would only be a way to lose an afternoon.
+/* Pin options, from datasheet tables 2-2-8. Every one of these is a 3.3 V pin
+ * now that VIO18 is set to 3.3 V at boot; before that none of them were, which
+ * is why this port used the SAI instead. */
+static const i2s_pin_t i2s_ws_pins_2[] = {
+    { &pin_B12_obj, GPIO_AF5 }, { &pin_B9_obj, GPIO_AF5 },
+    { &pin_A11_obj, GPIO_AF5 }, { &pin_B4_obj, GPIO_AF7 },
+};
+static const i2s_pin_t i2s_sck_pins_2[] = {
+    { &pin_B13_obj, GPIO_AF5 }, { &pin_B10_obj, GPIO_AF5 },
+    { &pin_A9_obj, GPIO_AF5 }, { &pin_A12_obj, GPIO_AF5 },
+    { &pin_D3_obj, GPIO_AF5 },
+};
+static const i2s_pin_t i2s_sd_pins_2[] = {
+    { &pin_B15_obj, GPIO_AF5 }, { &pin_C1_obj, GPIO_AF5 },
+    { &pin_C3_obj, GPIO_AF5 },
+};
 
-static const i2s_pin_t i2s_sck_pins_a[] = { { &pin_E5_obj, GPIO_AF6 } };
-static const i2s_pin_t i2s_ws_pins_a[] = { { &pin_E4_obj, GPIO_AF6 } };
-static const i2s_pin_t i2s_sd_pins_a[] = { { &pin_E6_obj, GPIO_AF6 } };
+static const i2s_pin_t i2s_ws_pins_3[] = {
+    { &pin_A4_obj, GPIO_AF6 }, { &pin_A15_obj, GPIO_AF6 },
+};
+static const i2s_pin_t i2s_sck_pins_3[] = {
+    { &pin_B3_obj, GPIO_AF6 }, { &pin_C10_obj, GPIO_AF6 },
+    { &pin_A14_obj, GPIO_AF1 },
+};
+static const i2s_pin_t i2s_sd_pins_3[] = {
+    { &pin_B2_obj, GPIO_AF7 }, { &pin_B5_obj, GPIO_AF7 },
+    { &pin_C12_obj, GPIO_AF6 }, { &pin_D6_obj, GPIO_AF5 },
+    { &pin_A13_obj, GPIO_AF1 },
+};
 
-/* Block B runs SYNCHRONOUS to block A: it takes SCK and FS from A over an
- * internal path and drives no clock pins of its own. Its own SCK/FS options are
- * PA14/PA15, which are VIO18 and therefore useless here anyway.
- *
- * So B is constructed with the SAME sck and ws pins as A -- they name the
- * shared clocks rather than pins B configures -- and only its data pin, PE3,
- * belongs to it. That is what makes full duplex cost one extra wire. */
-static const i2s_pin_t i2s_sck_pins_b[] = { { &pin_E5_obj, GPIO_AF6 } };
-static const i2s_pin_t i2s_ws_pins_b[] = { { &pin_E4_obj, GPIO_AF6 } };
-static const i2s_pin_t i2s_sd_pins_b[] = { { &pin_E3_obj, GPIO_AF6 } };
+#define I2S_PIN_COUNT(t) (sizeof(t) / sizeof((t)[0]))
 
 static uint8_t i2s_find_af(const i2s_pin_t *table, size_t len, mp_hal_pin_obj_t pin) {
     for (size_t i = 0; i < len; i++) {
@@ -153,79 +179,42 @@ static uint8_t i2s_find_af(const i2s_pin_t *table, size_t len, mp_hal_pin_obj_t 
     return 0;
 }
 
-/* The data pin must be a FLOATING input when receiving. Do not "improve" this
- * into a pulled input.
- *
- * Reference manual table 9-6 says a pull is allowed -- "I2Sx_SD Receiver:
- * Floating input or pull-up or pull-down input" -- and on this silicon that is
- * wrong. Configuring PE6 as input-with-pull (CNF=10) leaves the pad working,
- * measurably: it still follows the microphone and still toggles. But the SAI
- * then samples nothing and every captured word is zero. Only CNF=01, floating
- * input, routes the pad to the peripheral.
- *
- * That matters because an I2S microphone tri-states SD whenever it is not
- * driving its own channel -- the INMP441 drives 24 bits of a 32-bit slot and
- * lets go for the last 8 -- and a floating input holds the last level on pin
- * capacitance, so those 8 bits read back as a copy of bit 8 rather than zero.
- * The microphone's datasheet asks for a 100k pulldown on the SD trace for
- * exactly this reason. It has to be an external resistor here; mask the low 8
- * bits in software otherwise. */
-static void i2s_pin_init(mp_hal_pin_obj_t pin, uint8_t af, bool is_input) {
-    machine_pin_clock_enable(pin->id);
-    /* GPIO_PinAFConfig writes land in the AFIO block and are silently dropped
-     * while its clock is off. */
-    RCC_HB2PeriphClockCmd(RCC_HB2Periph_AFIO, ENABLE);
-    (void)RCC->HB2PCENR;
-
-    GPIO_InitTypeDef init = { 0 };
-    init.GPIO_Pin = MACHINE_PIN_MASK(pin->id);
-    init.GPIO_Speed = GPIO_Speed_Very_High;
-    init.GPIO_Mode = is_input ? GPIO_Mode_IN_FLOATING : GPIO_Mode_AF_PP;
-    GPIO_Init(machine_pin_gpio(pin->id), &init);
-
-    GPIO_PinAFConfig(machine_pin_gpio(pin->id), MACHINE_PIN_NUM(pin->id), af);
-}
-
 /******************************************************************************/
 // Clocking
 
-/* Bit clock is SAI_CK / (MCKDIV * 2) with the master-clock divider disabled,
- * which is the mode to use here: an INMP441-class microphone derives all its
- * timing from SCK and needs no MCLK at all.
+/* Sample rate is I2SxCLK / (base * (2 * I2SDIV + ODD)) with the master clock
+ * output disabled, where base is 32 for a 16-bit channel and 64 for a 32-bit
+ * one. I2SDIV is a whole byte and ODD contributes a half step, so the divisor
+ * moves in steps of one part in a few hundred -- fine enough that 44.1 kHz
+ * lands about 3 cents sharp rather than the SAI's 21.
  *
- * A stereo frame is two slots of `bits`, so SCK = rate * bits * 2.
- *
- * The divider is only 6 bits, so not every rate is reachable and none is
- * exact. The object reports what it actually got rather than echoing the
- * request -- print(i2s) shows both -- because silently running a fraction of a
- * percent fast is exactly the sort of thing that turns into a pitch-shifted
- * recording nobody can account for. */
-/* Slot width the hardware actually runs at, which is not always what the user
- * asked for: receive is always 32-bit stereo, because extmod's frame map
- * expects 8-byte frames and narrows them itself. Transmit uses the requested
- * width directly. */
-static uint8_t i2s_hw_bits(machine_i2s_obj_t *self) {
+ * The object reports what it actually got rather than echoing the request --
+ * print(i2s) shows both, and ch32.i2s_actual_rate() returns it -- because
+ * silently running a fraction of a percent fast is exactly the sort of thing
+ * that turns into a pitch-shifted recording nobody can account for. */
+static uint8_t i2s_channel_bits(machine_i2s_obj_t *self) {
+    /* Receive always runs 32-bit channels because extmod's frame map expects
+     * 8-byte frames and narrows them itself; transmit uses what was asked. */
     return self->mode == RX ? 32 : (uint8_t)self->bits;
 }
 
 static uint32_t i2s_set_rate(machine_i2s_obj_t *self) {
     RCC_ClocksTypeDef clocks;
     RCC_GetClocksFreq(&clocks);
-    uint32_t sai_ck = clocks.HCLK_Frequency;
+    uint32_t clk = clocks.SYSCLK_Frequency;
+    uint32_t base = (i2s_channel_bits(self) == 16) ? 32u : 64u;
 
-    uint32_t sck = (uint32_t)self->rate * (uint32_t)i2s_hw_bits(self) * 2u;
-    uint32_t div = (sai_ck + sck) / (2u * sck);   // rounded to nearest
-    if (div == 0) {
-        div = 1;
+    /* Nearest whole divisor, then split into the byte and the half step. */
+    uint32_t n = (clk + (base * (uint32_t)self->rate) / 2u) / (base * (uint32_t)self->rate);
+    if (n < I2S_DIV_MIN * 2u) {
+        n = I2S_DIV_MIN * 2u;
     }
-    if (div > I2S_MCKDIV_MAX) {
-        /* Below roughly 12 kHz at a 100 MHz SAI clock the divider runs out.
-         * Refusing beats quietly delivering a different sample rate. */
-        mp_raise_ValueError(MP_ERROR_TEXT("rate too low"));
+    if (n > I2S_DIV_MAX * 2u + 1u) {
+        mp_raise_ValueError(MP_ERROR_TEXT("rate too low for this clock"));
     }
 
-    self->actual_rate = (int32_t)(sai_ck / (2u * div) / ((uint32_t)i2s_hw_bits(self) * 2u));
-    return div;
+    self->actual_rate = (int32_t)(clk / (base * n));
+    return n;
 }
 
 /******************************************************************************/
@@ -244,7 +233,7 @@ static void i2s_empty_dma(machine_i2s_obj_t *self, uint8_t *half) {
     }
 }
 
-/* Transmit: the SAI always sends two slots, so a mono stream is written into
+/* Transmit: the bus always carries two slots, so a mono stream is written into
  * both of them -- otherwise it would come out of one channel only, at half the
  * expected rate. */
 static void i2s_feed_dma(machine_i2s_obj_t *self, uint8_t *half) {
@@ -317,16 +306,18 @@ static void i2s_dma_init(machine_i2s_obj_t *self) {
     DMA1->INTFCR = self->dma_flags;
 
     DMA_InitTypeDef init = { 0 };
-    init.DMA_PeripheralBaseAddr = (uint32_t)&self->block->DATAR;
+    init.DMA_PeripheralBaseAddr = (uint32_t)&self->spi->DATAR;
     init.DMA_Memory0BaseAddr = (uint32_t)self->dma_buffer;
     init.DMA_DIR = (self->mode == RX) ? DMA_DIR_PeripheralSRC : DMA_DIR_PeripheralDST;
-    /* The SAI data register is 32 bits wide whatever the slot size, so the DMA
-     * always moves words; the buffer length is in transfers, not bytes. */
-    init.DMA_BufferSize = SIZEOF_DMA_BUFFER_IN_BYTES / 4;
+    /* The I2S data register is 16 bits wide -- a 32-bit sample is two accesses
+     * -- so the DMA moves half-words and the buffer length is in transfers,
+     * not bytes. This is the one place the SAI differed: its register was 32
+     * bits and it moved words. */
+    init.DMA_BufferSize = SIZEOF_DMA_BUFFER_IN_BYTES / 2;
     init.DMA_PeripheralInc = DMA_PeripheralInc_Disable;
     init.DMA_MemoryInc = DMA_MemoryInc_Enable;
-    init.DMA_PeripheralDataSize = DMA_PeripheralDataSize_Word;
-    init.DMA_MemoryDataSize = DMA_MemoryDataSize_Word;
+    init.DMA_PeripheralDataSize = DMA_PeripheralDataSize_HalfWord;
+    init.DMA_MemoryDataSize = DMA_MemoryDataSize_HalfWord;
     init.DMA_Mode = DMA_Mode_Circular;
     init.DMA_Priority = DMA_Priority_VeryHigh;
     init.DMA_M2M = DMA_M2M_Disable;
@@ -334,10 +325,10 @@ static void i2s_dma_init(machine_i2s_obj_t *self) {
 
     uint8_t req;
     if (self->i2s_id == 0) {
-        req = (self->mode == RX) ? I2S_DMA_REQ_A_RX : I2S_DMA_REQ_A_TX;
+        req = (self->mode == RX) ? I2S_DMA_REQ_2_RX : I2S_DMA_REQ_2_TX;
         DMA_MuxChannelConfig(DMA_MuxChannel4, req);
     } else {
-        req = (self->mode == RX) ? I2S_DMA_REQ_B_RX : I2S_DMA_REQ_B_TX;
+        req = (self->mode == RX) ? I2S_DMA_REQ_3_RX : I2S_DMA_REQ_3_TX;
         DMA_MuxChannelConfig(DMA_MuxChannel5, req);
     }
 
@@ -348,110 +339,90 @@ static void i2s_dma_init(machine_i2s_obj_t *self) {
 }
 
 /******************************************************************************/
-// SAI
+// I2S peripheral
 
-/* Clear the sticky status flags. CLRFR sits at block offset 0x18, which the
- * SDK's SAI_Block_TypeDef declares as RESERVED0 and provides no accessor for,
- * hence the pointer arithmetic. Writing a 1 clears the corresponding flag;
- * 0x77 covers all of them. The frame-sync errors in particular latch and never
- * clear themselves, so a block that once saw a bad frame stays broken. */
-static void i2s_clear_flags(SAI_Block_TypeDef *block) {
-    volatile uint32_t *clrfr = (volatile uint32_t *)((uintptr_t)block + 0x18);
-    *clrfr = 0x77;
+static void i2s_periph_init(machine_i2s_obj_t *self) {
+    RCC_HB1PeriphClockCmd(
+        self->i2s_id == 0 ? RCC_HB1Periph_SPI2 : RCC_HB1Periph_SPI3, ENABLE);
+    (void)RCC->HB1PCENR;
+
+    I2S_Cmd(self->spi, DISABLE);
+
+    uint8_t chbits = i2s_channel_bits(self);
+    I2S_InitTypeDef init = { 0 };
+    init.I2S_Mode = (self->mode == RX) ? I2S_Mode_MasterRx : I2S_Mode_MasterTx;
+    init.I2S_Standard = I2S_Standard_Phillips;
+    init.I2S_DataFormat = (chbits == 16) ? I2S_DataFormat_16b : I2S_DataFormat_32b;
+    init.I2S_MCLKOutput = I2S_MCLKOutput_Disable;
+    init.I2S_AudioFreq = (uint32_t)self->rate;
+    init.I2S_CPOL = I2S_CPOL_Low;
+    I2S_Init(self->spi, &init);
+
+    /* I2S_Init() derives the prescaler itself, rounding through a decimal
+     * intermediate. Overwrite it with the nearest divisor so the delivered
+     * rate is the best the hardware can do and actual_rate describes it
+     * exactly. */
+    uint32_t n = i2s_set_rate(self);
+    self->spi->I2SPR = (uint16_t)((n >> 1) | ((n & 1u) ? SPI_I2SPR_ODD : 0u));
+
+    SPI_I2S_DMACmd(self->spi,
+        (self->mode == RX) ? SPI_I2S_DMAReq_Rx : SPI_I2S_DMAReq_Tx, ENABLE);
 }
 
-static void i2s_sai_init(machine_i2s_obj_t *self) {
-    RCC_HB2PeriphClockCmd(RCC_HB2Periph_SAI, ENABLE);
-    (void)RCC->HB2PCENR;
+static void i2s_pin_init(mp_hal_pin_obj_t pin, uint8_t af, bool input) {
+    machine_pin_clock_enable(pin->id);
+    RCC_HB2PeriphClockCmd(RCC_HB2Periph_AFIO, ENABLE);
 
-    SAI_Cmd(self->block, DISABLE);
-
-    /* Block A is the master and owns the clock pins. Block B is synchronous to
-     * it: slave mode plus SYNCEN, so it takes SCK and FS over the internal
-     * path rather than generating or receiving them on pins. A block B on its
-     * own, with no block A running, therefore has no clock and will not
-     * transfer -- which is the correct behaviour to expose, since its own
-     * clock pins are in the unusable voltage domain. */
-    bool sync = (self->i2s_id == 1);
-
-    SAI_InitTypeDef init;
-    if (sync) {
-        init.SAI_AudioMode = (self->mode == RX) ? SAI_Mode_SlaveRx : SAI_Mode_SlaveTx;
+    GPIO_InitTypeDef init = { 0 };
+    init.GPIO_Pin = MACHINE_PIN_MASK(pin->id);
+    /* Reference manual table 9-6 allows a pull on a receiving SD pin. On this
+     * silicon that is wrong -- the same trap the SAI driver hit: with a pull
+     * configured the pad still follows the signal but the peripheral samples
+     * nothing, because only the floating-input mode routes the pad inward. */
+    init.GPIO_Mode = input ? GPIO_Mode_IN_FLOATING : GPIO_Mode_AF_PP;
+    init.GPIO_Speed = GPIO_Speed_Very_High;
+    GPIO_Init(machine_pin_gpio(pin->id), &init);
+    if (!input) {
+        GPIO_PinAFConfig(machine_pin_gpio(pin->id), MACHINE_PIN_NUM(pin->id), af);
     } else {
-        init.SAI_AudioMode = (self->mode == RX) ? SAI_Mode_MasterRx : SAI_Mode_MasterTx;
+        GPIO_PinAFConfig(machine_pin_gpio(pin->id), MACHINE_PIN_NUM(pin->id), af);
     }
-    init.SAI_Protocol = SAI_Free_Protocol;
-    init.SAI_DataSize = (i2s_hw_bits(self) == 16) ? SAI_DataSize_16b : SAI_DataSize_32b;
-    init.SAI_FirstBit = SAI_FirstBit_MSB;
-    /* I2S drives data on the falling edge and samples on the rising edge, so a
-     * receiver strobes rising and a transmitter falling. */
-    init.SAI_ClockStrobing = (self->mode == RX) ? SAI_ClockStrobing_RisingEdge
-                                                : SAI_ClockStrobing_FallingEdge;
-    init.SAI_Synchro = sync ? SAI_Synchronous : SAI_Asynchronous;
-    init.SAI_OutDRIV = SAI_Output_NotReleased;
-    // No master clock; disabling the divider is what puts SCK straight on MCKDIV.
-    init.SAI_NoDivider = SAI_MasterDivider_Disabled;
-    init.SAI_MasterDivider = i2s_set_rate(self);
-    init.SAI_FIFOThreshold = SAI_FIFOThreshold_HalfFull;
-    SAI_Init(self->block, &init);
-
-    /* Philips I2S framing: the frame is two slots wide, frame sync is low for
-     * the left slot and lasts exactly half the frame, and data starts one bit
-     * clock after the edge. */
-    SAI_FrameInitTypeDef frame;
-    frame.SAI_FrameLength = i2s_hw_bits(self) * 2;
-    frame.SAI_ActiveFrameLength = i2s_hw_bits(self);
-    frame.SAI_FSDefinition = I2S_FS_ChannelIdentification;
-    /* Active low, because I2S holds WS low for the left channel and slot 0 is
-     * the one that begins at the FS active edge. A microphone with L/R tied to
-     * ground transmits in the left channel, so its data lands in slot 0 --
-     * which is the slot MONO reads.
-     *
-     * This briefly looked wrong during bring-up: the data appeared in slot 1
-     * and flipping the polarity appeared to fix it. It did not. The real fault
-     * was the SAI being enabled before the DMA was armed, which let the
-     * capture start half a frame late and swapped the slots; flipping the
-     * polarity only cancelled that out, and only sometimes. Fix the ordering,
-     * not the polarity -- see mp_machine_i2s_init_helper(). */
-    frame.SAI_FSPolarity = SAI_FS_ActiveLow;
-    frame.SAI_FSOffset = SAI_FS_BeforeFirstBit;
-    SAI_FrameInit(self->block, &frame);
-
-    SAI_SlotInitTypeDef slot;
-    slot.SAI_FirstBitOffset = 0;
-    slot.SAI_SlotSize = SAI_SlotSize_DataSize;
-    slot.SAI_SlotNumber = 2;
-    slot.SAI_SlotActive = SAI_SlotActive_0 | SAI_SlotActive_1;
-    SAI_SlotInit(self->block, &slot);
-
-    SAI_DMACmd(self->block, ENABLE);
-    /* Deliberately NOT enabled here. The block is started only once the DMA is
-     * armed -- see the ordering note in mp_machine_i2s_init_helper(). */
 }
 
 /******************************************************************************/
-// Port entry points required by extmod/machine_i2s.c
+// extmod interface
 
 static void mp_machine_i2s_init_helper(machine_i2s_obj_t *self, mp_arg_val_t *args) {
-    mp_hal_pin_obj_t sck = args[ARG_sck].u_obj == MP_OBJ_NULL ? NULL : mp_hal_get_pin_obj(args[ARG_sck].u_obj);
-    mp_hal_pin_obj_t ws = args[ARG_ws].u_obj == MP_OBJ_NULL ? NULL : mp_hal_get_pin_obj(args[ARG_ws].u_obj);
-    mp_hal_pin_obj_t sd = args[ARG_sd].u_obj == MP_OBJ_NULL ? NULL : mp_hal_get_pin_obj(args[ARG_sd].u_obj);
+    mp_hal_pin_obj_t sck = args[ARG_sck].u_obj == MP_OBJ_NULL
+        ? NULL : mp_hal_get_pin_obj(args[ARG_sck].u_obj);
+    mp_hal_pin_obj_t ws = args[ARG_ws].u_obj == MP_OBJ_NULL
+        ? NULL : mp_hal_get_pin_obj(args[ARG_ws].u_obj);
+    mp_hal_pin_obj_t sd = args[ARG_sd].u_obj == MP_OBJ_NULL
+        ? NULL : mp_hal_get_pin_obj(args[ARG_sd].u_obj);
     if (sck == NULL || ws == NULL || sd == NULL) {
-        mp_raise_ValueError(MP_ERROR_TEXT("sck, ws and sd are required"));
+        mp_raise_ValueError(MP_ERROR_TEXT("sck, ws and sd are all required"));
     }
 
-    i2s_mode_t mode = args[ARG_mode].u_int;
-    if (mode != RX && mode != TX) {
+    i2s_mode_t mode;
+    if (args[ARG_mode].u_int == (mp_int_t)RX) {
+        mode = RX;
+    } else if (args[ARG_mode].u_int == (mp_int_t)TX) {
+        mode = TX;
+    } else {
         mp_raise_ValueError(MP_ERROR_TEXT("invalid mode"));
     }
 
     int8_t bits = args[ARG_bits].u_int;
     if (bits != 16 && bits != 32) {
-        mp_raise_ValueError(MP_ERROR_TEXT("invalid bits"));
+        mp_raise_ValueError(MP_ERROR_TEXT("bits must be 16 or 32"));
     }
 
-    format_t format = args[ARG_format].u_int;
-    if (format != MONO && format != STEREO) {
+    format_t format;
+    if (args[ARG_format].u_int == (mp_int_t)MONO) {
+        format = MONO;
+    } else if (args[ARG_format].u_int == (mp_int_t)STEREO) {
+        format = STEREO;
+    } else {
         mp_raise_ValueError(MP_ERROR_TEXT("invalid format"));
     }
 
@@ -468,12 +439,15 @@ static void mp_machine_i2s_init_helper(machine_i2s_obj_t *self, mp_arg_val_t *ar
     /* Everything is validated, and the pins resolved, before anything is
      * committed -- a bad argument leaves a working object untouched rather
      * than half reconfigured. */
-    const i2s_pin_t *sck_tab = self->i2s_id == 0 ? i2s_sck_pins_a : i2s_sck_pins_b;
-    const i2s_pin_t *ws_tab = self->i2s_id == 0 ? i2s_ws_pins_a : i2s_ws_pins_b;
-    const i2s_pin_t *sd_tab = self->i2s_id == 0 ? i2s_sd_pins_a : i2s_sd_pins_b;
-    uint8_t sck_af = i2s_find_af(sck_tab, 1, sck);
-    uint8_t ws_af = i2s_find_af(ws_tab, 1, ws);
-    uint8_t sd_af = i2s_find_af(sd_tab, 1, sd);
+    const i2s_pin_t *sck_tab = self->i2s_id == 0 ? i2s_sck_pins_2 : i2s_sck_pins_3;
+    const i2s_pin_t *ws_tab = self->i2s_id == 0 ? i2s_ws_pins_2 : i2s_ws_pins_3;
+    const i2s_pin_t *sd_tab = self->i2s_id == 0 ? i2s_sd_pins_2 : i2s_sd_pins_3;
+    size_t sck_len = self->i2s_id == 0 ? I2S_PIN_COUNT(i2s_sck_pins_2) : I2S_PIN_COUNT(i2s_sck_pins_3);
+    size_t ws_len = self->i2s_id == 0 ? I2S_PIN_COUNT(i2s_ws_pins_2) : I2S_PIN_COUNT(i2s_ws_pins_3);
+    size_t sd_len = self->i2s_id == 0 ? I2S_PIN_COUNT(i2s_sd_pins_2) : I2S_PIN_COUNT(i2s_sd_pins_3);
+    uint8_t sck_af = i2s_find_af(sck_tab, sck_len, sck);
+    uint8_t ws_af = i2s_find_af(ws_tab, ws_len, ws);
+    uint8_t sd_af = i2s_find_af(sd_tab, sd_len, sd);
 
     self->ring_buffer_storage = m_new(uint8_t, ring_buffer_len);
     ringbuf_init(&self->ring_buffer, self->ring_buffer_storage, ring_buffer_len);
@@ -487,68 +461,38 @@ static void mp_machine_i2s_init_helper(machine_i2s_obj_t *self, mp_arg_val_t *ar
     self->rate = rate;
     self->ibuf = ring_buffer_len;
     self->callback_for_non_blocking = MP_OBJ_NULL;
-    self->non_blocking_descriptor.copy_in_progress = false;
     self->io_mode = BLOCKING;
-    memset(self->dma_buffer, 0, sizeof(self->dma_buffer));
+    self->non_blocking_descriptor.copy_in_progress = false;
+    memset(self->dma_buffer, 0, SIZEOF_DMA_BUFFER_IN_BYTES);
 
     if (self->i2s_id == 0) {
-        self->block = SAI_Block_A;
+        self->spi = SPI2;
         self->dma = DMA1_Channel4;
         self->dma_flags = I2S_DMA_A_FLAGS;
         self->dma_ht_flag = I2S_DMA_A_HT;
         self->dma_irqn = DMA1_Channel4_IRQn;
     } else {
-        self->block = SAI_Block_B;
+        self->spi = SPI3;
         self->dma = DMA1_Channel5;
         self->dma_flags = I2S_DMA_B_FLAGS;
         self->dma_ht_flag = I2S_DMA_B_HT;
         self->dma_irqn = DMA1_Channel5_IRQn;
     }
 
-    /* Block B does not own the clock pins -- block A drives them, and
-     * reconfiguring them here would just fight it. Only its data pin is B's. */
-    if (self->i2s_id == 0) {
-        i2s_pin_init(sck, sck_af, false);
-        i2s_pin_init(ws, ws_af, false);
-    }
-    i2s_pin_init(sd, sd_af, self->mode == RX);
+    i2s_pin_init(sck, sck_af, false);
+    i2s_pin_init(ws, ws_af, false);
+    i2s_pin_init(sd, sd_af, mode == RX);
 
     machine_i2s_active[self->i2s_id] = self;
+    i2s_periph_init(self);
 
-    /* Order matters, and getting it wrong is subtle. The SAI must be started
-     * AFTER the DMA is armed. Enabling it first lets its FIFO begin filling in
-     * the window before the DMA is running, so the first word the DMA collects
-     * can be the second slot of a frame rather than the first -- and from then
-     * on left and right are swapped for the life of the object. It is not even
-     * consistently wrong: it depends on how long that window happens to be,
-     * which is why MONO looked fine while STEREO came out reversed. */
-    i2s_sai_init(self);
+    /* Arm the DMA before enabling the peripheral. Enabling first lets the FIFO
+     * move a sample during the gap, and the DMA then starts on the second slot
+     * of a frame, leaving left and right swapped for the life of the object.
+     * That was true of the SAI and there is no reason to find out the hard way
+     * whether it is true here too. */
     i2s_dma_init(self);
-    SAI_FlushFIFO(self->block);
-    SAI_Cmd(self->block, ENABLE);
-
-    /* A synchronous block must already be running when the master starts.
-     * Block A is enabled the moment I2S(0) is constructed, so by the time
-     * I2S(1) exists the frames are already flowing and block B meets its first
-     * frame sync somewhere in the middle of one. It then latches AFSDET and
-     * LFSDET -- anticipated and late frame sync -- and never transfers a
-     * single word, which looks like a dead DMA rather than a timing problem.
-     *
-     * Restarting the master here puts the pair in the documented order:
-     * synchronous block enabled first, master second. Doing it inside the
-     * driver keeps it off the user, who would otherwise have to construct the
-     * two objects in an order the API gives no hint about. */
-    if (self->i2s_id == 1) {
-        machine_i2s_obj_t *master = machine_i2s_active[0];
-        if (master != NULL && master->block != NULL) {
-            SAI_Cmd(master->block, DISABLE);
-            SAI_Cmd(self->block, DISABLE);
-            SAI_FlushFIFO(self->block);
-            i2s_clear_flags(self->block);
-            SAI_Cmd(self->block, ENABLE);
-            SAI_Cmd(master->block, ENABLE);
-        }
-    }
+    I2S_Cmd(self->spi, ENABLE);
 }
 
 static machine_i2s_obj_t *mp_machine_i2s_make_new_instance(mp_int_t i2s_id) {
@@ -561,7 +505,7 @@ static machine_i2s_obj_t *mp_machine_i2s_make_new_instance(mp_int_t i2s_id) {
         self = mp_obj_malloc(machine_i2s_obj_t, &machine_i2s_type);
         MP_STATE_PORT(machine_i2s_obj[i2s_id]) = self;
         self->i2s_id = i2s_id;
-        self->block = NULL;
+        self->spi = NULL;
     } else {
         self = MP_STATE_PORT(machine_i2s_obj[i2s_id]);
         mp_machine_i2s_deinit(self);
@@ -570,17 +514,18 @@ static machine_i2s_obj_t *mp_machine_i2s_make_new_instance(mp_int_t i2s_id) {
 }
 
 static void mp_machine_i2s_deinit(machine_i2s_obj_t *self) {
-    // block doubles as the "is initialised" flag.
-    if (self->block != NULL) {
+    // spi doubles as the "is initialised" flag.
+    if (self->spi != NULL) {
         NVIC_DisableIRQ(self->dma_irqn);
         DMA_ITConfig(self->dma, DMA_IT_TC | DMA_IT_HT, DISABLE);
         DMA_Cmd(self->dma, DISABLE);
-        SAI_Cmd(self->block, DISABLE);
-        SAI_FlushFIFO(self->block);
+        SPI_I2S_DMACmd(self->spi,
+            (self->mode == RX) ? SPI_I2S_DMAReq_Rx : SPI_I2S_DMAReq_Tx, DISABLE);
+        I2S_Cmd(self->spi, DISABLE);
         machine_i2s_active[self->i2s_id] = NULL;
         m_free(self->ring_buffer_storage);
         self->ring_buffer_storage = NULL;
-        self->block = NULL;
+        self->spi = NULL;
     }
 }
 
@@ -594,7 +539,7 @@ uint32_t machine_i2s_actual_rate(mp_int_t i2s_id) {
         mp_raise_ValueError(MP_ERROR_TEXT("invalid id"));
     }
     machine_i2s_obj_t *self = MP_STATE_PORT(machine_i2s_obj[i2s_id]);
-    if (self == NULL || self->block == NULL) {
+    if (self == NULL || self->spi == NULL) {
         return 0;
     }
     return (uint32_t)self->actual_rate;

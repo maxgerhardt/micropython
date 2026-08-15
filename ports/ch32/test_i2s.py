@@ -2,9 +2,9 @@
 #
 # Wants an I2S microphone on SAI block A -- brought up against an INMP441:
 #
-#     VDD -> 3V3      SCK -> PE5
-#     GND -> GND      WS  -> PE4
-#     L/R -> GND      SD  -> PE6
+#     VDD -> 3V3      SCK -> PB13
+#     GND -> GND      WS  -> PB12
+#     L/R -> GND      SD  -> PB15
 #
 # L/R to ground puts the microphone in the left channel, which is the slot
 # MONO reads. The signal checks are skipped if nothing is connected, so the
@@ -33,9 +33,9 @@ def check(name, cond):
 def make(fmt=I2S.MONO, rate=16000, bits=32):
     return I2S(
         0,
-        sck=Pin("PE5"),
-        ws=Pin("PE4"),
-        sd=Pin("PE6"),
+        sck=Pin("PB13"),
+        ws=Pin("PB12"),
+        sd=Pin("PB15"),
         mode=I2S.RX,
         bits=bits,
         format=fmt,
@@ -85,7 +85,7 @@ if live:
     check("signal varies (not a stuck value)", rms > 0)
     check("no large DC offset", abs(mean) < (1 << 28))
 else:
-    print("  SKIP  no signal -- is a microphone connected to PE4/PE5/PE6?")
+    print("  SKIP  no signal -- is a microphone connected to PB12/PB13/PB15?")
 
 i2s.deinit()
 
@@ -115,8 +115,8 @@ try:
     bad = I2S(
         0,
         sck=Pin("PA0"),
-        ws=Pin("PE4"),
-        sd=Pin("PE6"),
+        ws=Pin("PB12"),
+        sd=Pin("PB15"),
         mode=I2S.RX,
         bits=32,
         format=I2S.MONO,
