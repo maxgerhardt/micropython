@@ -69,6 +69,23 @@ static mp_obj_t ch32_i2s_actual_rate(mp_obj_t id_in) {
     return mp_obj_new_int_from_uint(machine_i2s_actual_rate(mp_obj_get_int(id_in)));
 }
 static MP_DEFINE_CONST_FUN_OBJ_1(ch32_i2s_actual_rate_obj, ch32_i2s_actual_rate);
+
+/* Run an I2S block as a bus slave, taking SCK and WS from its pins.
+ *
+ * machine.I2S has no argument for this because it models one master driving a
+ * codec. The case that needs it is a loopback from this port's own I2S2 to its
+ * I2S3, which is how the transmit side gets checked on a board with no I2S
+ * input device -- two masters would drive SCK and WS against each other.
+ *
+ * Sticky per id, and consulted when the object is constructed, so arm it
+ * before calling I2S(). */
+void machine_i2s_set_slave(mp_int_t i2s_id, bool slave);
+
+static mp_obj_t ch32_i2s_slave(mp_obj_t id_in, mp_obj_t slave_in) {
+    machine_i2s_set_slave(mp_obj_get_int(id_in), mp_obj_is_true(slave_in));
+    return mp_const_none;
+}
+static MP_DEFINE_CONST_FUN_OBJ_2(ch32_i2s_slave_obj, ch32_i2s_slave);
 #endif
 
 #if MICROPY_PY_NETWORK_LAN
@@ -152,6 +169,7 @@ static const mp_rom_map_elem_t ch32_module_globals_table[] = {
     { MP_ROM_QSTR(MP_QSTR_reset_flags), MP_ROM_PTR(&ch32_reset_flags_obj) },
     #if MICROPY_PY_MACHINE_I2S
     { MP_ROM_QSTR(MP_QSTR_i2s_actual_rate), MP_ROM_PTR(&ch32_i2s_actual_rate_obj) },
+    { MP_ROM_QSTR(MP_QSTR_i2s_slave), MP_ROM_PTR(&ch32_i2s_slave_obj) },
     #endif
     #if MICROPY_PY_FRAMEBUF_ACCEL
     { MP_ROM_QSTR(MP_QSTR_framebuf_accel), MP_ROM_PTR(&ch32_framebuf_accel_obj) },

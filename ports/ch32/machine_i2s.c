@@ -144,13 +144,47 @@ typedef struct _machine_i2s_obj_t {
     uint32_t dma_ht_flag;
     IRQn_Type dma_irqn;
     int32_t actual_rate;              // what the divider could really produce
-    uint8_t dma_buffer[SIZEOF_DMA_BUFFER_IN_BYTES];
+    bool slave;                       // SCK and WS come from outside
+    /* Explicitly aligned, not incidentally so. The DMA moves half-words in and
+     * out of here and the transmit path swaps them a half-word at a time, both
+     * of which fault or misbehave on an odd address -- but the element type is
+     * uint8_t, so the compiler is free to place it anywhere and will do
+     * exactly that the moment a single-byte field is added above it. That is
+     * not hypothetical: adding the slave flag put this buffer on an odd
+     * address and the first transmit died with a misaligned load. */
+    uint8_t dma_buffer[SIZEOF_DMA_BUFFER_IN_BYTES] __attribute__((aligned(4)));
     ring_buf_t ring_buffer;
     uint8_t *ring_buffer_storage;
     non_blocking_descriptor_t non_blocking_descriptor;
 } machine_i2s_obj_t;
 
 static machine_i2s_obj_t *machine_i2s_active[MAX_I2S_CH32];
+
+/* Armed by ch32.i2s_slave(id, True), consulted by the next I2S() on that id.
+ *
+ * A slave takes SCK and WS from its pins instead of driving them, which the
+ * hardware supports on either direction but machine.I2S has no argument for --
+ * upstream models one master talking to a codec. It lives here as a port hook
+ * rather than an extra keyword so extmod/machine_i2s.c stays untouched.
+ *
+ * What it is for: pointing one of this port's I2S blocks at the other, which
+ * is the only way to check the transmit side on a board with no I2S input
+ * device. Two masters wired together would drive SCK and WS against each
+ * other, and without a shared WS the receiver frames on an arbitrary
+ * boundary -- a 16-bit offset there is indistinguishable from the half-word
+ * order the loopback exists to measure.
+ *
+ * Known limitation, measured: a slave receiver samples one SCK earlier than
+ * a Philips master transmits, so every sample arrives shifted right by one
+ * bit (0x11223300 came back as 0x08911980). Both ends read back identical
+ * I2SSTD bits, so the delay that Philips puts between the WS edge and the
+ * MSB is not being honoured in slave mode. The direction of the shift says
+ * it is the slave that is early, not the master that is late, which is why
+ * master mode -- the only mode machine.I2S itself can reach, and the one
+ * validated against a real microphone -- is unaffected. Good enough for the
+ * byte-order measurement it exists for; fix before offering slave mode as a
+ * feature. */
+static bool machine_i2s_slave_next[MAX_I2S_CH32];
 
 /* Pin options, from datasheet tables 2-2-8. Every one of these is a 3.3 V pin
  * now that VIO18 is set to 3.3 V at boot; before that none of them were, which
@@ -383,7 +417,11 @@ static void i2s_periph_init(machine_i2s_obj_t *self) {
 
     uint8_t chbits = i2s_channel_bits(self);
     I2S_InitTypeDef init = { 0 };
-    init.I2S_Mode = (self->mode == RX) ? I2S_Mode_MasterRx : I2S_Mode_MasterTx;
+    if (self->slave) {
+        init.I2S_Mode = (self->mode == RX) ? I2S_Mode_SlaveRx : I2S_Mode_SlaveTx;
+    } else {
+        init.I2S_Mode = (self->mode == RX) ? I2S_Mode_MasterRx : I2S_Mode_MasterTx;
+    }
     init.I2S_Standard = I2S_Standard_Phillips;
     init.I2S_DataFormat = (chbits == 16) ? I2S_DataFormat_16b : I2S_DataFormat_32b;
     init.I2S_MCLKOutput = I2S_MCLKOutput_Disable;
@@ -391,12 +429,19 @@ static void i2s_periph_init(machine_i2s_obj_t *self) {
     init.I2S_CPOL = I2S_CPOL_Low;
     I2S_Init(self->spi, &init);
 
-    /* I2S_Init() derives the prescaler itself, rounding through a decimal
-     * intermediate. Overwrite it with the nearest divisor so the delivered
-     * rate is the best the hardware can do and actual_rate describes it
-     * exactly. */
-    uint32_t n = i2s_set_rate(self);
-    self->spi->I2SPR = (uint16_t)((n >> 1) | ((n & 1u) ? SPI_I2SPR_ODD : 0u));
+    if (self->slave) {
+        /* The prescaler drives nothing here -- the bus clock arrives on the
+         * pins -- so there is no divisor to choose and no rate to refuse. The
+         * rate that will actually be delivered is whatever the master sends. */
+        self->actual_rate = self->rate;
+    } else {
+        /* I2S_Init() derives the prescaler itself, rounding through a decimal
+         * intermediate. Overwrite it with the nearest divisor so the delivered
+         * rate is the best the hardware can do and actual_rate describes it
+         * exactly. */
+        uint32_t n = i2s_set_rate(self);
+        self->spi->I2SPR = (uint16_t)((n >> 1) | ((n & 1u) ? SPI_I2SPR_ODD : 0u));
+    }
 
     SPI_I2S_DMACmd(self->spi,
         (self->mode == RX) ? SPI_I2S_DMAReq_Rx : SPI_I2S_DMAReq_Tx, ENABLE);
@@ -495,6 +540,7 @@ static void mp_machine_i2s_init_helper(machine_i2s_obj_t *self, mp_arg_val_t *ar
     self->ibuf = ring_buffer_len;
     self->callback_for_non_blocking = MP_OBJ_NULL;
     self->io_mode = BLOCKING;
+    self->slave = machine_i2s_slave_next[self->i2s_id];
     self->non_blocking_descriptor.copy_in_progress = false;
     memset(self->dma_buffer, 0, SIZEOF_DMA_BUFFER_IN_BYTES);
 
@@ -512,8 +558,11 @@ static void mp_machine_i2s_init_helper(machine_i2s_obj_t *self, mp_arg_val_t *ar
         self->dma_irqn = DMA1_Channel5_IRQn;
     }
 
-    i2s_pin_init(sck, sck_af, false);
-    i2s_pin_init(ws, ws_af, false);
+    /* A slave receives the bus clock and frame select rather than sourcing
+     * them, so those two pads must not be driven -- wiring a slave to a master
+     * with them configured as outputs shorts two drivers together. */
+    i2s_pin_init(sck, sck_af, self->slave);
+    i2s_pin_init(ws, ws_af, self->slave);
     i2s_pin_init(sd, sd_af, mode == RX);
 
     machine_i2s_active[self->i2s_id] = self;
@@ -631,6 +680,15 @@ uint32_t machine_i2s_actual_rate(mp_int_t i2s_id) {
         return 0;
     }
     return (uint32_t)self->actual_rate;
+}
+
+/* Behind ch32.i2s_slave(); see machine_i2s_slave_next. Sticky, so a script can
+ * arm it once and then build the object with a plain I2S() call. */
+void machine_i2s_set_slave(mp_int_t i2s_id, bool slave) {
+    if (i2s_id < 0 || i2s_id >= MAX_I2S_CH32) {
+        mp_raise_ValueError(MP_ERROR_TEXT("invalid id"));
+    }
+    machine_i2s_slave_next[i2s_id] = slave;
 }
 
 MP_REGISTER_ROOT_POINTER(void *machine_i2s_obj[MAX_I2S_CH32]);
