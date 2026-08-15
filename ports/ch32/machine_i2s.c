@@ -82,12 +82,27 @@
 /* Receive always captures 32-bit stereo, whatever the user asked for, and
  * extmod/machine_i2s.c reshapes it on the way out through this map. So the
  * ring buffer always holds 8-byte frames on the RX side, and -1 means "this
- * output byte comes from nowhere". */
+ * output byte comes from nowhere".
+ *
+ * The half-words of a 32-bit sample arrive in the opposite order to the one
+ * they need in memory, which is what makes this table differ from the version
+ * in ports/stm32. The data register is 16 bits wide, so one sample is two
+ * transfers, and the bus carries the slot most significant half first -- the
+ * DMA therefore lands slot[31:16] in src[0..1] and slot[15:0] in src[2..3],
+ * while a little-endian 32-bit sample wants exactly the reverse. The SAI this
+ * port used previously had a 32-bit register and moved a whole sample per
+ * transfer, so the question never arose there.
+ *
+ * Measured rather than reasoned: an INMP441 (24 bits left-justified in a
+ * 32-bit slot, so the low byte should barely move) gave 93 distinct low bytes
+ * as captured and 2 with the halves exchanged, with 1024/1024 samples fitting
+ * in 24 bits instead of 1022. The 16-bit rows follow from the same ordering --
+ * the most significant half of the slot is src[0..1], not src[2..3]. */
 static const int8_t i2s_frame_map[NUM_I2S_USER_FORMATS][I2S_RX_FRAME_SIZE_IN_BYTES] = {
-    { -1, -1,  0,  1, -1, -1, -1, -1 },  // Mono, 16-bit
-    {  0,  1,  2,  3, -1, -1, -1, -1 },  // Mono, 32-bit
-    { -1, -1,  0,  1, -1, -1,  2,  3 },  // Stereo, 16-bit
-    {  0,  1,  2,  3,  4,  5,  6,  7 },  // Stereo, 32-bit
+    {  0,  1, -1, -1, -1, -1, -1, -1 },  // Mono, 16-bit
+    {  2,  3,  0,  1, -1, -1, -1, -1 },  // Mono, 32-bit
+    {  0,  1, -1, -1,  2,  3, -1, -1 },  // Stereo, 16-bit
+    {  2,  3,  0,  1,  6,  7,  4,  5 },  // Stereo, 32-bit
 };
 
 static int8_t get_frame_mapping_index(int8_t bits, format_t format) {
@@ -255,6 +270,24 @@ static void i2s_feed_dma(machine_i2s_obj_t *self, uint8_t *half) {
     } else {
         for (uint32_t i = 0; i < SIZEOF_HALF_DMA_BUFFER_IN_BYTES; i++) {
             ringbuf_pop(&self->ring_buffer, &half[i]);
+        }
+    }
+
+    /* Mirror of the ordering described at i2s_frame_map: the bus carries the
+     * most significant half of a slot first, so a 32-bit sample has to be
+     * handed to the 16-bit data register high half first, which is the
+     * opposite of how it sits in memory. Sending it as-is transmits the two
+     * halves swapped. 16-bit samples are a single transfer and need nothing.
+     *
+     * The transmit direction has no microphone to measure against; this
+     * follows from the half-word order measured on receive, which shares the
+     * data register and the same shift chain. */
+    if (self->bits == 32) {
+        uint16_t *w = (uint16_t *)(void *)half;
+        for (uint32_t i = 0; i < SIZEOF_HALF_DMA_BUFFER_IN_BYTES / 4; i++) {
+            uint16_t t = w[i * 2];
+            w[i * 2] = w[i * 2 + 1];
+            w[i * 2 + 1] = t;
         }
     }
 }
