@@ -88,6 +88,12 @@ typedef struct _machine_spi_obj_t {
     uint8_t firstbit;
     uint8_t prescaler_log2;           /* SCK = HCLK >> (prescaler_log2 + 1) */
     uint32_t baudrate;                /* the rate actually achieved */
+    /* In-flight interrupt-driven transfer. Only meaningful while this object
+     * is the one machine_spi_async points at. */
+    const uint8_t *xfer_src;
+    uint8_t *xfer_dest;
+    size_t xfer_left;
+    uint16_t xfer_chunk;
 } machine_spi_obj_t;
 
 /* Which pins each signal can come out on, and with which alternate function.
@@ -315,16 +321,23 @@ static const uint8_t machine_spi_idle_byte = 0;
 /* These exist only to end the WFI in machine_spi_dma_wait() promptly. Each
  * clears its own transfer-complete enable, so it fires once per transfer rather
  * than spinning on a flag nobody has cleared yet. */
+/* Defined below, with the rest of the interrupt-driven path. Does nothing
+ * unless a transfer started by irq() is in flight, so a blocking transfer is
+ * unaffected: there the waiter notices CNTR reach zero by itself. */
+static void machine_spi_dma_complete(void);
+
 void CH32_IRQ_HANDLER(DMA1_Channel2_IRQHandler);
 void DMA1_Channel2_IRQHandler(void) {
     SPI_DMA_RX->CFGR &= ~DMA_IT_TC;
     DMA1->INTFCR = SPI_DMA_RX_FLAGS;
+    machine_spi_dma_complete();
 }
 
 void CH32_IRQ_HANDLER(DMA1_Channel3_IRQHandler);
 void DMA1_Channel3_IRQHandler(void) {
     SPI_DMA_TX->CFGR &= ~DMA_IT_TC;
     DMA1->INTFCR = SPI_DMA_TX_FLAGS;
+    machine_spi_dma_complete();
 }
 
 /* Sleep until `ch` has moved every byte. Returns false on timeout. */
@@ -357,20 +370,34 @@ static bool machine_spi_dma_wait(DMA_Channel_TypeDef *ch) {
  * channels and peripheral request lines to switch off first: raising from here
  * would leave a channel armed and writing into a buffer the GC is free to
  * reuse. */
-static bool machine_spi_transfer_dma(machine_spi_obj_t *self, size_t len,
-    const uint8_t *src, uint8_t *dest) {
-    SPI_TypeDef *spi = self->spi;
-    bool ok = true;
-
+/* Clocks, request routing and interrupts: the parts of a DMA transfer that do
+ * not change between chunks, and that both the blocking and the
+ * interrupt-driven path need before arming anything. */
+static void machine_spi_dma_prepare(machine_spi_obj_t *self) {
     RCC_HBPeriphClockCmd(RCC_HBPeriph_DMA1, ENABLE);
     DMA_MuxChannelConfig(SPI_DMA_TX_MUX, SPI_DMA_TX_REQ(self->id));
     DMA_MuxChannelConfig(SPI_DMA_RX_MUX, SPI_DMA_RX_REQ(self->id));
     NVIC_EnableIRQ(SPI_DMA_TX_IRQN);
     NVIC_EnableIRQ(SPI_DMA_RX_IRQN);
+}
 
-    while (len != 0 && ok) {
-        uint16_t n = len > SPI_DMA_MAX_LEN ? SPI_DMA_MAX_LEN : (uint16_t)len;
+/* Stop both channels and drop the request lines. Safe to call on a transfer
+ * that never started, which is what makes it usable as an abort. */
+static void machine_spi_dma_disarm(machine_spi_obj_t *self) {
+    SPI_I2S_DMACmd(self->spi, SPI_I2S_DMAReq_Tx, DISABLE);
+    SPI_I2S_DMACmd(self->spi, SPI_I2S_DMAReq_Rx, DISABLE);
+    DMA_ITConfig(SPI_DMA_TX, DMA_IT_TC, DISABLE);
+    DMA_ITConfig(SPI_DMA_RX, DMA_IT_TC, DISABLE);
+    DMA_Cmd(SPI_DMA_TX, DISABLE);
+    DMA_Cmd(SPI_DMA_RX, DISABLE);
+}
 
+/* Arm and start one chunk of up to SPI_DMA_MAX_LEN bytes, returning the
+ * channel whose transfer-complete ends it. */
+static DMA_Channel_TypeDef *machine_spi_dma_arm(machine_spi_obj_t *self, uint16_t n,
+    const uint8_t *src, uint8_t *dest) {
+    SPI_TypeDef *spi = self->spi;
+    {
         DMA_Cmd(SPI_DMA_TX, DISABLE);
         DMA_Cmd(SPI_DMA_RX, DISABLE);
         DMA1->INTFCR = SPI_DMA_TX_FLAGS | SPI_DMA_RX_FLAGS;
@@ -431,16 +458,19 @@ static bool machine_spi_transfer_dma(machine_spi_obj_t *self, size_t len,
         }
         SPI_I2S_DMACmd(spi, SPI_I2S_DMAReq_Tx, ENABLE);
         DMA_Cmd(SPI_DMA_TX, ENABLE);
+        return watch;
+    }
+}
 
-        ok = machine_spi_dma_wait(watch);
+static bool machine_spi_transfer_dma(machine_spi_obj_t *self, size_t len,
+    const uint8_t *src, uint8_t *dest) {
+    bool ok = true;
 
-        SPI_I2S_DMACmd(spi, SPI_I2S_DMAReq_Tx, DISABLE);
-        SPI_I2S_DMACmd(spi, SPI_I2S_DMAReq_Rx, DISABLE);
-        DMA_ITConfig(SPI_DMA_TX, DMA_IT_TC, DISABLE);
-        DMA_ITConfig(SPI_DMA_RX, DMA_IT_TC, DISABLE);
-        DMA_Cmd(SPI_DMA_TX, DISABLE);
-        DMA_Cmd(SPI_DMA_RX, DISABLE);
-
+    machine_spi_dma_prepare(self);
+    while (len != 0 && ok) {
+        uint16_t n = len > SPI_DMA_MAX_LEN ? SPI_DMA_MAX_LEN : (uint16_t)len;
+        ok = machine_spi_dma_wait(machine_spi_dma_arm(self, n, src, dest));
+        machine_spi_dma_disarm(self);
         len -= n;
         if (src != NULL) {
             src += n;
@@ -450,6 +480,90 @@ static bool machine_spi_transfer_dma(machine_spi_obj_t *self, size_t len,
         }
     }
     return ok;
+}
+
+/* --- interrupt-driven transfers ---
+ *
+ * machine.I2S sets the pattern, and this follows it rather than inventing
+ * anything: irq() takes a callback, and with one set the ordinary write(),
+ * readinto() and write_readinto() calls start the transfer and return
+ * immediately, with the callback run once it has finished. extmod's I2S header
+ * spells out that the mode is chosen by setting a callback and that the
+ * asynchronous half is the port's business, which is what this is.
+ *
+ * Two things the caller owns. The buffers must stay referenced until the
+ * callback arrives -- the DMA is reading and writing them the whole time, and
+ * nothing here can keep them alive. And only one transfer can be in flight,
+ * because there is one pair of DMA channels; a second one raises EBUSY rather
+ * than queueing, so an overlap is a mistake the program can see.
+ */
+static machine_spi_obj_t *machine_spi_async;
+
+/* The irq() handler, kept in a root pointer rather than in the object: the SPI
+ * objects are static, so the collector never traces them and a callback stored
+ * there would be collected while still in use. */
+#define machine_spi_handler(self) (MP_STATE_PORT(machine_spi_irq_handler)[(self)->id - 1])
+
+static void machine_spi_async_arm(machine_spi_obj_t *self) {
+    uint16_t n = self->xfer_left > SPI_DMA_MAX_LEN
+        ? SPI_DMA_MAX_LEN : (uint16_t)self->xfer_left;
+    self->xfer_chunk = n;
+    machine_spi_dma_arm(self, n, self->xfer_src, self->xfer_dest);
+}
+
+static void machine_spi_dma_complete(void) {
+    machine_spi_obj_t *self = machine_spi_async;
+    if (self == NULL) {
+        /* A blocking transfer, or one already finished: the handler above has
+         * cleared the flag and there is nothing else to do. */
+        return;
+    }
+
+    machine_spi_dma_disarm(self);
+    self->xfer_left -= self->xfer_chunk;
+    if (self->xfer_src != NULL) {
+        self->xfer_src += self->xfer_chunk;
+    }
+    if (self->xfer_dest != NULL) {
+        self->xfer_dest += self->xfer_chunk;
+    }
+    if (self->xfer_left != 0) {
+        machine_spi_async_arm(self);
+        return;
+    }
+
+    /* On a write with nothing to receive the transmit channel is what was
+     * watched, and it reports done when the last byte reaches DATAR rather
+     * than when it leaves the pin. Waiting for BSY here keeps the callback
+     * from running while SCK is still moving, which would let it raise CS
+     * mid-byte. The bound matters because this is interrupt context: at any
+     * baud rate worth using DMA for this is under a microsecond, and a bus
+     * that has genuinely stopped responding must not hold the core. */
+    for (uint32_t i = 0; i < 1000 && (self->spi->STATR & SPI_STATR_BSY); i++) {
+    }
+
+    machine_spi_async = NULL;
+    mp_obj_t handler = machine_spi_handler(self);
+    if (handler != MP_OBJ_NULL) {
+        mp_sched_schedule(handler, MP_OBJ_FROM_PTR(self));
+    }
+}
+
+/* Abandon an interrupt-driven transfer, from the soft-reset path.
+ *
+ * The DMA is writing into a Python buffer, and a soft reset hands that memory
+ * back to a heap that is about to be rebuilt; a channel left running would
+ * scribble over whatever the next program allocates there. The root pointer
+ * goes too, for the reason machine_i2s_deinit_all() documents: mp_init() does
+ * not clear them, so it would otherwise dangle into the discarded heap. */
+void machine_spi_deinit_all(void) {
+    if (machine_spi_async != NULL) {
+        machine_spi_dma_disarm(machine_spi_async);
+        machine_spi_async = NULL;
+    }
+    for (size_t i = 0; i < MP_ARRAY_SIZE(machine_spi_obj); i++) {
+        MP_STATE_PORT(machine_spi_irq_handler)[i] = MP_OBJ_NULL;
+    }
 }
 
 /* Write-only, and short enough that setting two DMA channels up would cost more
@@ -473,6 +587,21 @@ static void machine_spi_transfer(mp_obj_base_t *self_in, size_t len,
     SPI_TypeDef *spi = self->spi;
 
     if (len == 0) {
+        return;
+    }
+
+    /* With a callback set, start the transfer and leave. */
+    if (machine_spi_handler(self) != MP_OBJ_NULL) {
+        if (machine_spi_async != NULL) {
+            mp_raise_OSError(MP_EBUSY);
+        }
+        self->xfer_src = src;
+        self->xfer_dest = dest;
+        self->xfer_left = len;
+        machine_spi_async = self;
+        machine_spi_dma_prepare(self);
+        machine_spi_drain(spi);
+        machine_spi_async_arm(self);
         return;
     }
 
@@ -657,6 +786,55 @@ static void machine_spi_deinit(mp_obj_base_t *self_in) {
      * to, which is a worse default than leaving an idle bus idle. */
 }
 
+/* Set a callback and transfers become non-blocking; pass None and they go
+ * back to blocking. Same call, same meaning, as machine.I2S.irq().
+ *
+ * The handler is called with the SPI object, from the scheduler rather than
+ * from the interrupt itself, so it may allocate and raise like any other
+ * Python code. Setting it to None while a transfer is running does not stop
+ * that transfer -- it finishes, silently. */
+static mp_obj_t machine_spi_irq(mp_obj_t self_in, mp_obj_t handler) {
+    machine_spi_obj_t *self = MP_OBJ_TO_PTR(self_in);
+    if (handler != mp_const_none && !mp_obj_is_callable(handler)) {
+        mp_raise_ValueError(MP_ERROR_TEXT("invalid callback"));
+    }
+    machine_spi_handler(self) = (handler == mp_const_none) ? MP_OBJ_NULL : handler;
+    return mp_const_none;
+}
+static MP_DEFINE_CONST_FUN_OBJ_2(machine_spi_irq_obj, machine_spi_irq);
+
+/* init() and deinit() as methods. extmod keeps its own versions static, so a
+ * port that wants to add anything to the dictionary has to supply these two
+ * itself; they do nothing but call the protocol entries just above. */
+static mp_obj_t machine_spi_init_meth(size_t n_args, const mp_obj_t *args, mp_map_t *kw_args) {
+    machine_spi_init((mp_obj_base_t *)MP_OBJ_TO_PTR(args[0]), n_args - 1, args + 1, kw_args);
+    return mp_const_none;
+}
+static MP_DEFINE_CONST_FUN_OBJ_KW(machine_spi_init_meth_obj, 1, machine_spi_init_meth);
+
+static mp_obj_t machine_spi_deinit_meth(mp_obj_t self_in) {
+    machine_spi_deinit((mp_obj_base_t *)MP_OBJ_TO_PTR(self_in));
+    return mp_const_none;
+}
+static MP_DEFINE_CONST_FUN_OBJ_1(machine_spi_deinit_meth_obj, machine_spi_deinit_meth);
+
+/* The generic dictionary, plus irq(). The transfer methods are extmod's own
+ * objects, so read(), write() and friends behave exactly as they do on every
+ * other port -- only the extra entry is this port's. */
+static const mp_rom_map_elem_t machine_spi_locals_dict_table[] = {
+    { MP_ROM_QSTR(MP_QSTR_init), MP_ROM_PTR(&machine_spi_init_meth_obj) },
+    { MP_ROM_QSTR(MP_QSTR_deinit), MP_ROM_PTR(&machine_spi_deinit_meth_obj) },
+    { MP_ROM_QSTR(MP_QSTR_read), MP_ROM_PTR(&mp_machine_spi_read_obj) },
+    { MP_ROM_QSTR(MP_QSTR_readinto), MP_ROM_PTR(&mp_machine_spi_readinto_obj) },
+    { MP_ROM_QSTR(MP_QSTR_write), MP_ROM_PTR(&mp_machine_spi_write_obj) },
+    { MP_ROM_QSTR(MP_QSTR_write_readinto), MP_ROM_PTR(&mp_machine_spi_write_readinto_obj) },
+    { MP_ROM_QSTR(MP_QSTR_irq), MP_ROM_PTR(&machine_spi_irq_obj) },
+
+    { MP_ROM_QSTR(MP_QSTR_MSB), MP_ROM_INT(MICROPY_PY_MACHINE_SPI_MSB) },
+    { MP_ROM_QSTR(MP_QSTR_LSB), MP_ROM_INT(MICROPY_PY_MACHINE_SPI_LSB) },
+};
+static MP_DEFINE_CONST_DICT(machine_spi_locals_dict, machine_spi_locals_dict_table);
+
 static const mp_machine_spi_p_t machine_spi_p = {
     .init = machine_spi_init,
     .deinit = machine_spi_deinit,
@@ -670,5 +848,7 @@ MP_DEFINE_CONST_OBJ_TYPE(
     make_new, machine_spi_make_new,
     print, machine_spi_print,
     protocol, &machine_spi_p,
-    locals_dict, &mp_machine_spi_locals_dict
+    locals_dict, &machine_spi_locals_dict
     );
+
+MP_REGISTER_ROOT_POINTER(mp_obj_t machine_spi_irq_handler[4]);
