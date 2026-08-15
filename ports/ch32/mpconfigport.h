@@ -332,6 +332,16 @@ void mp_hal_ch32_wfe(void);
 /* Flushes the block device page cache; the port keeps up to 8 KB dirty. */
 #define MICROPY_PY_OS_SYNC              (1)
 #define MICROPY_PY_IO                   (1)
+/* asyncio, and the select it is built on. Both default off at
+ * ROM_LEVEL_CORE_FEATURES, so they have to be asked for by name.
+ *
+ * select is not optional here even though nothing in this port calls poll()
+ * directly: asyncio's IOQueue is a select.poll(), and asyncio.ThreadSafeFlag
+ * -- the way an interrupt hands completion to a coroutine -- is an io.IOBase
+ * whose wait() goes through that queue. Without select, asyncio imports and
+ * then fails the moment anything waits on hardware. */
+#define MICROPY_PY_ASYNCIO              (1)
+#define MICROPY_PY_SELECT               (1)
 /* print(..., file=f) needs both this and MICROPY_PY_IO; sys_stdio_mphal.c is
  * already in the build to provide sys.stdin/stdout/stderr. */
 #define MICROPY_PY_SYS_STDFILES         (1)

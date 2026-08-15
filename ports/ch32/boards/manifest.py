@@ -1,5 +1,10 @@
 # Modules frozen into the firmware, so they import without a filesystem.
 
+# asyncio. The C module behind MICROPY_PY_ASYNCIO is only the task queue and
+# Task type; the event loop, streams, locks and events are Python and come
+# from here, the same way ports/rp2 and ports/stm32 pull them in.
+include("$(MPY_DIR)/extmod/asyncio")
+
 # machine.dht_readinto() is the C half of the DHT11/DHT22 driver; dht.py is the
 # Python half that decodes the frame it captures. Shipping only the C function
 # leaves "import dht" failing on a board whose flash has just been erased, so
