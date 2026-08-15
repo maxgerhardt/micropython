@@ -63,6 +63,13 @@ typedef struct _machine_audioout_obj_t {
     uint32_t wr;            /* next word write() will fill */
     uint32_t rate;
     uint32_t underruns;
+    /* State for spotting an underrun between two write() calls: what was still
+     * queued when the last one returned, and when that was. */
+    uint32_t queued_at_write;
+    uint32_t last_write_us;
+    /* An empty ring is normal before the first write() and a fault after it,
+     * so underruns are only counted once something has actually been queued. */
+    bool primed;
     bool running;
 } machine_audioout_obj_t;
 
@@ -90,6 +97,34 @@ static uint32_t audio_free(machine_audioout_obj_t *self) {
     uint32_t rd = audio_dma_pos(self);
     uint32_t used = (self->wr + self->frames - rd) % self->frames;
     return self->frames - used - 1;
+}
+
+/* Leave the unwritten part of the ring holding silence.
+ *
+ * The DMA never stops. It circles the ring whether or not anything has been
+ * queued, so whatever sits ahead of the write pointer is what gets played when
+ * the producer falls behind. Left alone that is the previous pass's audio, and
+ * a stalled stream is heard as the last fraction of a second repeating over
+ * and over -- which sounds like a decoder fault rather than what it is. Filled
+ * with silence it is heard as a gap: less alarming, and unmistakably a gap.
+ *
+ * Only the free region is touched, so this races neither the DMA reading the
+ * queued frames nor a later write(), which lays real frames over the silence
+ * from the same position. The DMA advancing during the loop only frees more
+ * words, so at worst a few are left holding stale audio until the next call.
+ *
+ * This does mean a producer that stops calling write() altogether -- rather
+ * than merely falling behind -- gets one ring of silence and then hears the
+ * ring repeat, because nothing is left running to blank it. Stopping properly
+ * goes through deinit(), which halts the DMA.
+ */
+static void audio_blank_free(machine_audioout_obj_t *self) {
+    uint32_t space = audio_free(self);
+    uint32_t pos = self->wr;
+    for (uint32_t i = 0; i < space; i++) {
+        self->ring[pos] = AUDIO_SILENCE;
+        pos = (pos + 1) % self->frames;
+    }
 }
 
 static void audio_timer_start(uint32_t rate) {
@@ -246,6 +281,9 @@ static mp_obj_t machine_audioout_make_new(const mp_obj_type_t *type,
     self->frames = (uint32_t)frames;
     self->wr = 0;
     self->underruns = 0;
+    self->queued_at_write = 0;
+    self->last_write_us = 0;
+    self->primed = false;
     self->ring = m_new(uint32_t, self->frames);
     for (uint32_t i = 0; i < self->frames; i++) {
         self->ring[i] = AUDIO_SILENCE;
@@ -285,6 +323,26 @@ static mp_obj_t machine_audioout_write(mp_obj_t self_in, mp_obj_t buf_in) {
     uint32_t total = bufinfo.len / 4;
     uint32_t done = 0;
 
+    /* Did the DMA run out of queued frames since the last call?
+     *
+     * Not answerable from the ring pointers. The moment the read pointer
+     * passes the write pointer the difference between them wraps, so an empty
+     * ring and a full one are the same reading a few microseconds apart --
+     * measured, not assumed: checking for "everything free" caught nothing at
+     * all, because it is only true for the instant the two are equal.
+     *
+     * The clock has no such ambiguity. The DMA consumes exactly `rate` frames
+     * a second whatever the producer is doing, so comparing elapsed time
+     * against what was left queued says plainly whether it ran dry, and stays
+     * right however long the gap was. */
+    if (self->primed) {
+        uint32_t elapsed = mp_hal_ticks_us() - self->last_write_us;
+        uint64_t consumed = ((uint64_t)elapsed * self->rate) / 1000000u;
+        if (consumed > (uint64_t)self->queued_at_write) {
+            self->underruns++;
+        }
+    }
+
     while (done < total) {
         uint32_t space = audio_free(self);
         if (space == 0) {
@@ -308,6 +366,13 @@ static mp_obj_t machine_audioout_write(mp_obj_t self_in, mp_obj_t buf_in) {
         }
         done += n;
     }
+
+    audio_blank_free(self);
+    /* Recorded after blanking, so the timestamp and the queue depth describe
+     * the same moment: the one the next call measures the gap from. */
+    self->queued_at_write = self->frames - 1 - audio_free(self);
+    self->last_write_us = mp_hal_ticks_us();
+    self->primed = true;
     return MP_OBJ_NEW_SMALL_INT(bufinfo.len);
 }
 static MP_DEFINE_CONST_FUN_OBJ_2(machine_audioout_write_obj, machine_audioout_write);
@@ -320,6 +385,19 @@ static mp_obj_t machine_audioout_free(mp_obj_t self_in) {
 }
 static MP_DEFINE_CONST_FUN_OBJ_1(machine_audioout_free_obj, machine_audioout_free);
 
+/* How many times write() has found the ring empty since construction.
+ *
+ * Non-zero means the producer could not keep up and silence went out in place
+ * of audio. Worth having because an underrun is otherwise inaudible as
+ * anything but a gap, and a gap sounds much like a stall anywhere else in the
+ * chain -- this says which end of it to look at.
+ */
+static mp_obj_t machine_audioout_underruns(mp_obj_t self_in) {
+    machine_audioout_obj_t *self = MP_OBJ_TO_PTR(self_in);
+    return mp_obj_new_int_from_uint(self->underruns);
+}
+static MP_DEFINE_CONST_FUN_OBJ_1(machine_audioout_underruns_obj, machine_audioout_underruns);
+
 static mp_obj_t machine_audioout_deinit(mp_obj_t self_in) {
     audio_stop(MP_OBJ_TO_PTR(self_in));
     return mp_const_none;
@@ -329,6 +407,7 @@ static MP_DEFINE_CONST_FUN_OBJ_1(machine_audioout_deinit_obj, machine_audioout_d
 static const mp_rom_map_elem_t machine_audioout_locals_dict_table[] = {
     { MP_ROM_QSTR(MP_QSTR_write), MP_ROM_PTR(&machine_audioout_write_obj) },
     { MP_ROM_QSTR(MP_QSTR_free), MP_ROM_PTR(&machine_audioout_free_obj) },
+    { MP_ROM_QSTR(MP_QSTR_underruns), MP_ROM_PTR(&machine_audioout_underruns_obj) },
     { MP_ROM_QSTR(MP_QSTR_deinit), MP_ROM_PTR(&machine_audioout_deinit_obj) },
     { MP_ROM_QSTR(MP_QSTR___del__), MP_ROM_PTR(&machine_audioout_deinit_obj) },
 };

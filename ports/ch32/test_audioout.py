@@ -114,4 +114,33 @@ t = machine.Timer(6, freq=1000, callback=lambda t: None)
 check("Timer(6) works again after deinit", t is not None)
 t.deinit()
 
+# Underruns. The DMA never stops, so falling behind is silent in both senses:
+# nothing raises, and since the free part of the ring is blanked, nothing is
+# heard either. The counter is the only way to find out it happened.
+#
+# 4096 frames is 93 ms at 44.1 kHz, so a 300 ms pause guarantees the DMA runs
+# past everything queued, while a second of keeping up must not register.
+a = machine.AudioOut(rate=44100, ibuf=4096)
+block = tone(44100, 1024)
+check("a fresh AudioOut reports no underruns", a.underruns() == 0)
+
+t0 = time.ticks_ms()
+while time.ticks_diff(time.ticks_ms(), t0) < 1000:
+    a.write(block)
+check("keeping up reports no underruns", a.underruns() == 0)
+
+time.sleep_ms(300)
+a.write(block)
+check("a stall longer than the ring is counted", a.underruns() == 1)
+
+time.sleep_ms(300)
+a.write(block)
+check("a second stall counts once more", a.underruns() == 2)
+
+t0 = time.ticks_ms()
+while time.ticks_diff(time.ticks_ms(), t0) < 500:
+    a.write(block)
+check("recovering stops the count moving", a.underruns() == 2)
+a.deinit()
+
 print("%u passed, %u failed" % (passed, failed))
