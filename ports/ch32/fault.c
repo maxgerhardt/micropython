@@ -44,6 +44,23 @@ static void fault_report(const char *kind) {
     fault_puthex(mtval);
     fault_puts("\r\nmstatus=");
     fault_puthex(mstatus);
+    fault_puts("\r\nra=");
+    fault_puthex(ra);
+    fault_puts("\r\nsp=");
+    fault_puthex(sp);
+
+    /* Anything on the stack that looks like a code address is a return
+     * address, and between them they name the call chain that got here. Both
+     * RAM_CODE and flash are checked because this port runs code from each. */
+    fault_puts("\r\nstack:");
+    for (uint32_t i = 0; i < 16; i++) {
+        uint32_t w = ((volatile uint32_t *)sp)[i];
+        if ((w >= 0x20000000u && w < 0x20180000u)
+            || (w >= 0x08000000u && w < 0x080B0000u)) {
+            fault_puts(" ");
+            fault_puthex(w);
+        }
+    }
     fault_puts("\r\nresetting...\r\n");
 
     for (volatile uint32_t i = 0; i < 2000000; i++) {
