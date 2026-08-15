@@ -522,6 +522,19 @@ static void mp_machine_i2s_deinit(machine_i2s_obj_t *self) {
         SPI_I2S_DMACmd(self->spi,
             (self->mode == RX) ? SPI_I2S_DMAReq_Rx : SPI_I2S_DMAReq_Tx, DISABLE);
         I2S_Cmd(self->spi, DISABLE);
+
+        /* Reset the peripheral through RCC, not just its enable bit.
+         *
+         * I2S_Cmd(DISABLE) stops the block wherever it happens to be in a
+         * frame, and what it leaves behind is not a state the next
+         * I2S_Cmd(ENABLE) recovers from: the first object of a session worked
+         * and the second reset the board. machine_can.c hit the same shape --
+         * a controller that would not come back from a control-register reset
+         * and needed the RCC one -- so this is the known cure on this part. */
+        uint32_t rcc_bit = (self->i2s_id == 0)
+            ? RCC_HB1Periph_SPI2 : RCC_HB1Periph_SPI3;
+        RCC_HB1PeriphResetCmd(rcc_bit, ENABLE);
+        RCC_HB1PeriphResetCmd(rcc_bit, DISABLE);
         machine_i2s_active[self->i2s_id] = NULL;
         m_free(self->ring_buffer_storage);
         self->ring_buffer_storage = NULL;
