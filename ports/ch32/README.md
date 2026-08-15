@@ -1167,6 +1167,74 @@ the board — R11 beside the VIO18 pin is the unpopulated 0 Ω for exactly that 
 and the LDO then disabled to save its quiescent current. Running the LDO at
 3.3 V from a 3.3 V input instead needs no soldering and holds 3.300 V.
 
+## Audio out
+
+`machine.AudioOut` streams stereo audio from the two 12-bit DACs. `machine.DAC`
+writes one sample per call, which is fine for a control voltage and useless for
+audio; this is the paced path:
+
+    a = machine.AudioOut(rate=44100)      # ibuf=4096 frames by default
+    a.write(pcm)                          # signed 16-bit, stereo, interleaved
+    a.free()                              # frames writable without blocking
+
+TIM6's update drives TRGO, which triggers both DAC channels together and raises
+DMA request 103 through the DMAMUX; the DMA moves one 32-bit word per frame
+into `DAC->RD12BDHR`. That is the dual 12-bit register -- channel 1 in bits
+11:0, channel 2 in 27:16 -- so a stereo frame is a single transfer and the two
+channels cannot drift apart. `write()` blocks while the ring is full, which is
+what paces a player to real time.
+
+**DAC1 is PA4 (left) and DAC2 is PA5 (right).** They are raw DAC pins with no
+drive worth the name: put an RC low-pass on each (1k and 10nF is about right
+for 44.1 kHz) into a high-impedance amplifier input, and do not drive a speaker
+directly.
+
+Measured by counting what the DMA consumes: 7999, 22051 and 44093 Hz for 8000,
+22050 and 44100 asked. The residual is the integer reload -- 100 MHz / 44100 is
+2267.6 -- not drift.
+
+Two things that were not obvious. **TIM6 counts at HCLK, not at the core
+clock**, and those differ by 4x here, so taking `SystemCoreClock` made every
+rate exactly four times too slow while still producing plausible audio. And the
+write pointer starts level with the DMA read pointer rather than at word 0: the
+ring is pre-filled with silence and the DMA laps past 0 before Python gets a
+turn, so starting at 0 reported an almost-full ring and made the first
+`write()` block for a whole buffer period.
+
+## MP3 and internet radio
+
+`mp3.Decoder` turns MP3 frames into exactly the format `AudioOut.write()` takes,
+so a player has no conversion step in it:
+
+    import mp3
+    d = mp3.Decoder()
+    used, frames = d.decode(inbuf, outbuf)   # one frame per call
+    d.info()                                 # (rate, channels, kbps)
+
+`used > 0` with `frames == 0` is normal -- the decoder skipping a tag or
+resynchronising -- and it always consumes something, so a caller cannot loop
+forever on a stream that never syncs. `used == 0` means the buffer does not yet
+hold a whole frame.
+
+The decoder is [minimp3](https://github.com/lieff/minimp3) (`lib/minimp3`, CC0),
+a single header. Its state is 6704 bytes on the heap and it emits int16
+natively rather than float.
+
+**It decodes 128 kbps 44.1 kHz stereo at about 16x real time** -- 1627 us per
+frame against a 26122 us budget, so roughly 6% of the core. That is measured on
+a synthesised tone of the same shape as a radio stream, decode-only; 13.7x
+including reading the file. There was no need to pin anything into ITCM.
+
+`examples/webradio.py` is the whole thing joined up: it follows a `.m3u` or
+`.pls` playlist and any redirects, opens the stream with `Icy-MetaData: 1`,
+strips the Shoutcast metadata blocks out of the audio (left in, they decode as
+a click), and feeds frames to the DACs.
+
+    mpremote connect COM7 run examples/webradio.py
+
+Verified against a live 128 kbps station: the ring buffer sits nearly full, so
+the decoder is well ahead and the DAC is what paces the loop.
+
 ## SD cards
 
 `machine.SDCard` drives the SDMMC controller, and the object is a block device,

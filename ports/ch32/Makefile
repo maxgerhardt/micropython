@@ -115,6 +115,9 @@ LDFLAGS += --specs=$(PICOLIBC_SPECS)
 endif
 endif
 
+# minimp3 is a single public-domain header; lib/minimp3 holds it.
+INC += -I$(TOP)/lib/minimp3
+
 INC += -I. -I$(TOP) -I$(BUILD) -I$(BOARD_DIR)
 
 ifeq ($(DEBUG),1)
@@ -156,6 +159,7 @@ SRC_C += \
 	machine_touchpad.c \
 	machine_sdcard.c \
 	machine_audioout.c \
+	modmp3.c \
 	machine_vio18.c \
 	machine_i2c.c \
 	machine_spi.c \
