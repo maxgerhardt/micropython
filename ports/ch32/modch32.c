@@ -122,18 +122,24 @@ static MP_DEFINE_CONST_FUN_OBJ_0(ch32_eth_diag_obj, ch32_eth_diag);
 #if MICROPY_HW_ENABLE_USBDEV
 #include "tusb.h"
 extern volatile uint32_t ch32_usbd_task_count;
+extern volatile uint32_t ch32_usbd_isr_task_count;
 extern volatile uint32_t ch32_usbd_irq_count;
 
-/* (tud_task calls, USB interrupts, mounted, cdc connected, cdc write avail) */
+/* (tud_task calls, USB interrupts, mounted, cdc connected, cdc write avail,
+   task runs driven from the ISR) */
 static mp_obj_t ch32_usb_stat(void) {
-    mp_obj_t t[5] = {
+    mp_obj_t t[6] = {
         mp_obj_new_int_from_uint(ch32_usbd_task_count),
         mp_obj_new_int_from_uint(ch32_usbd_irq_count),
         mp_obj_new_bool(tud_mounted()),
         mp_obj_new_bool(tud_cdc_connected()),
         mp_obj_new_int_from_uint(tud_cdc_write_available()),
+        /* Appended, not inserted: scripts/check_usb.py indexes this tuple by
+           position and inserting in the middle would silently move mounted and
+           cdc_connected under it. */
+        mp_obj_new_int_from_uint(ch32_usbd_isr_task_count),
     };
-    return mp_obj_new_tuple(5, t);
+    return mp_obj_new_tuple(6, t);
 }
 static MP_DEFINE_CONST_FUN_OBJ_0(ch32_usb_stat_obj, ch32_usb_stat);
 

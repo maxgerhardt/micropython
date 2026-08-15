@@ -130,16 +130,52 @@ void ch32_usbd_init(void) {
  * chip are otherwise indistinguishable from one another. */
 volatile uint32_t ch32_usbd_task_count;
 volatile uint32_t ch32_usbd_irq_count;
+/* Task runs driven from the interrupt rather than the poll loop. Separated
+ * because it is the only way to tell the two paths apart from Python, and the
+ * whole point of the interrupt path is that it keeps working when the poll
+ * loop cannot run. */
+volatile uint32_t ch32_usbd_isr_task_count;
+
+/* tud_task() is not reentrant: it drains an event queue and dispatches class
+ * callbacks, so a call from the interrupt landing on top of one from the poll
+ * loop would corrupt that state. The flag makes whichever arrives second give
+ * up -- safely, because the events it would have handled stay queued for the
+ * call already in progress or the next one. */
+static volatile bool ch32_usbd_in_task;
 
 void ch32_usbd_task(void) {
+    if (ch32_usbd_in_task) {
+        return;
+    }
+    ch32_usbd_in_task = true;
     ch32_usbd_task_count++;
     tud_task();
+    ch32_usbd_in_task = false;
 }
 
+/* Run the device stack from the interrupt as well as from the poll loop.
+ *
+ * The poll loop alone is not enough, and this port has paid for that three
+ * times: machine.CAN livelocking, a timer callback printing a traceback, and
+ * machine.I2S blocking on a full ring. Each one held the main loop in C long
+ * enough for TinyUSB's event FIFO to fill, and a full FIFO is a TU_ASSERT,
+ * which on this SDK is an ebreak into a weak handler that spins forever with
+ * the board dead to serial and Ctrl-C undeliverable.
+ *
+ * ports/mimxrt does the same thing for the same reason -- tud_task() straight
+ * after tud_int_handler() in USB_OTG1_IRQHandler. The upstream default in
+ * shared/tinyusb only *schedules* the task, which still needs somebody to run
+ * the scheduler; ports/samd carries an extra hook to cover the case where
+ * nobody does. Calling it here means no amount of C-side rudeness can starve
+ * the USB stack: the worst that happens is the work is late, not fatal. */
 void CH32_IRQ_HANDLER(USBFS_IRQHandler);
 void USBFS_IRQHandler(void) {
     ch32_usbd_irq_count++;
     tud_int_handler(0);
+    if (!ch32_usbd_in_task) {
+        ch32_usbd_isr_task_count++;
+    }
+    ch32_usbd_task();
 }
 
 /* TinyUSB asks the port for the serial number string. The chip's 96-bit unique
