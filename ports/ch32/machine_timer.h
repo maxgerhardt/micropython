@@ -24,6 +24,7 @@ enum {
     CH32_TIMER_COUNTER,
     CH32_TIMER_ENCODER,
     CH32_TIMER_AUDIO,
+    CH32_TIMER_ADC,
 };
 
 /* Take timer `id` (1-12) for `owner`. False if someone else already has it;

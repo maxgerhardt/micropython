@@ -131,6 +131,8 @@ const char *ch32_timer_owner_name(uint8_t owner) {
             return "Encoder";
         case CH32_TIMER_AUDIO:
             return "AudioOut";
+        case CH32_TIMER_ADC:
+            return "ADC.read_timed";
         default:
             return "nothing";
     }

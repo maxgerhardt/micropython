@@ -145,6 +145,10 @@ void *ch32_commit_exec(void *buf, size_t len, void *reloc);
 #define MICROPY_PY_MACHINE_ADC          (1)
 #define MICROPY_PY_MACHINE_ADC_INCLUDEFILE "ports/ch32/machine_adc.c"
 #define MICROPY_PY_MACHINE_ADC_READ_UV  (1)
+/* ADC.read_timed(buf, freq) and ADC.busy(): a block of samples taken by DMA
+ * at a rate a timer sets, rather than by a Python loop whose spacing is
+ * whatever the interpreter managed. */
+#define MICROPY_PY_MACHINE_ADC_READ_TIMED (1)
 
 /* machine.UART on USART2-8, interrupt-driven in both directions through ring
  * buffers, with hardware RTS/CTS. USART1 is deliberately excluded: it carries
