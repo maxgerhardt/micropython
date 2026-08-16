@@ -15,6 +15,7 @@ import math
 import struct
 import time
 
+import asyncio
 import machine
 
 FRAMES = 4096
@@ -141,6 +142,112 @@ t0 = time.ticks_ms()
 while time.ticks_diff(time.ticks_ms(), t0) < 500:
     a.write(block)
 check("recovering stops the count moving", a.underruns() == 2)
+
+raises("irq() rejects a non-callable", ValueError, lambda: a.irq(42))
+a.deinit()
+raises("irq() after deinit raises", OSError, lambda: a.irq(None))
+
+# --- irq(): write() stops blocking -------------------------------------------
+#
+# The callback rides the DMA's half-transfer and transfer-complete interrupts,
+# so it means "another half-ring has been played, there is room now" rather
+# than "your buffer has finished". Nothing ever finishes: the DMA circles.
+RATE = 44100
+a = machine.AudioOut(rate=RATE, ibuf=FRAMES)
+
+# Long enough that it cannot fit in the ring, so a non-blocking write has to
+# come back short and a blocking one has to take real time.
+big = bytes(FRAMES * 4 * 3)
+
+t0 = time.ticks_us()
+a.write(big)
+blocking_us = time.ticks_diff(time.ticks_us(), t0)
+check("without a callback a long write blocks (%d us)" % blocking_us, blocking_us > 50000)
+
+seen = []
+a.irq(lambda obj: seen.append(obj))
+
+t0 = time.ticks_us()
+took = a.write(big)
+start_us = time.ticks_diff(time.ticks_us(), t0)
+check("with a callback it returns at once (%d us)" % start_us, start_us < blocking_us // 10)
+check("and reports how much it accepted (%d of %d)" % (took, len(big)), 0 < took < len(big))
+check("what it accepted is whole frames", took % 4 == 0)
+
+deadline = time.ticks_add(time.ticks_ms(), 500)
+while not seen and time.ticks_diff(deadline, time.ticks_ms()) > 0:
+    time.sleep_ms(1)
+check("the callback runs", len(seen) > 0)
+check("the callback is passed the AudioOut object", seen and seen[0] is a)
+
+# Cadence. Two callbacks per trip round the ring, and a trip is FRAMES/RATE --
+# 93 ms at these settings, so about 21 a second. Checked as a range because
+# the scheduler coalesces nothing but can be late.
+seen.clear()
+t0 = time.ticks_ms()
+while time.ticks_diff(time.ticks_ms(), t0) < 1000:
+    a.write(big)
+    time.sleep_ms(5)
+per_s = len(seen)
+want = 2.0 * RATE / FRAMES
+print("  callbacks: %d in 1 s, expected about %.0f" % (per_s, want))
+check("callback rate is two per ring period", want * 0.7 < per_s < want * 1.3)
+
+a.irq(None)
+t0 = time.ticks_us()
+a.write(big)
+again_us = time.ticks_diff(time.ticks_us(), t0)
+check("irq(None) restores blocking (%d us)" % again_us, again_us > 50000)
+a.deinit()
+
+# --- the point of it: feeding from asyncio without blocking ------------------
+a = machine.AudioOut(rate=RATE, ibuf=FRAMES)
+flag = asyncio.ThreadSafeFlag()
+a.irq(lambda obj: flag.set())
+
+
+async def feed(seconds):
+    """Keep the ring full for a while, awaiting room instead of blocking."""
+    mv = memoryview(block)
+    off = 0
+    total = 0
+    ticks = 0
+    t0 = time.ticks_ms()
+
+    async def counter():
+        nonlocal ticks
+        while True:
+            ticks += 1
+            await asyncio.sleep_ms(1)
+
+    beat = asyncio.create_task(counter())
+    while time.ticks_diff(time.ticks_ms(), t0) < seconds * 1000:
+        n = a.write(mv[off:])
+        total += n
+        off += n
+        if off == len(block):
+            off = 0
+        else:
+            await flag.wait()
+    beat.cancel()
+    return total, ticks, time.ticks_diff(time.ticks_ms(), t0)
+
+
+sent, ticks, elapsed = asyncio.run(feed(2))
+# Bytes have to match the rate: the DMA consumes exactly RATE frames a second
+# whatever the producer does, so a feeder that kept up sent about that many.
+# Expect to come in slightly under rather than over. The ring starts full of
+# the silence put there at construction, and the DMA plays that without anyone
+# having written it, so the first ring-full -- 93 ms of the run -- is consumed
+# and never counted here.
+expect = RATE * 4 * elapsed // 1000
+print("  fed %d bytes in %d ms, expected about %d" % (sent, elapsed, expect))
+check("an asyncio feeder sends audio at the sample rate", abs(sent - expect) < expect // 10)
+check("and never underran", a.underruns() == 0)
+# The whole reason for doing it this way: other tasks still got to run.
+print("  a 1 ms task ran %d times meanwhile" % ticks)
+check("the event loop stayed responsive", ticks > 500)
+a.irq(None)
 a.deinit()
 
 print("%u passed, %u failed" % (passed, failed))

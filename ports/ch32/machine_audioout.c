@@ -23,6 +23,19 @@
  * pins with no output buffer worth the name at audio rates: feed them into a
  * high-impedance input, and put an RC low-pass on each to get rid of the
  * 44.1 kHz staircase before it reaches an amplifier.
+ *
+ * irq() makes write() non-blocking, the same way it does on machine.I2S,
+ * machine.SPI and machine.I2C here:
+ *
+ *     a.irq(lambda a: flag.set())
+ *     n = a.write(pcm)      # bytes accepted, possibly fewer than offered
+ *     await flag.wait()     # room again
+ *
+ * The callback comes from the DMA's half-transfer and transfer-complete
+ * interrupts, so it arrives twice per trip round the ring -- every 46 ms at
+ * the default size and 44.1 kHz -- whatever the producer is doing. It means
+ * "more room now", not "your buffer has been played": the DMA circles a ring
+ * and never finishes anything.
  */
 #include <stdbool.h>
 #include <string.h>
@@ -33,6 +46,7 @@
 #include "py/mphal.h"
 #include "py/runtime.h"
 
+#include "irq.h"
 #include "machine_pin.h"
 #include "machine_timer.h"
 
@@ -40,9 +54,12 @@
  * request carries both channels. */
 #define AUDIO_DMA_REQ_DAC1 (103)
 
-/* DMA1 channels 2 and 3 are machine.SPI, 4 and 5 are machine.I2S. 1 is free. */
+/* DMA1 channels 2 and 3 are machine.SPI, 4 and 5 are machine.I2S, 6 is
+ * machine.I2C. 1 is free. */
 #define AUDIO_DMA_CHANNEL (DMA1_Channel1)
 #define AUDIO_DMA_MUX_CHANNEL (DMA_MuxChannel1)
+#define AUDIO_DMA_IRQN (DMA1_Channel1_IRQn)
+#define AUDIO_DMA_FLAGS (DMA1_IT_GL1 | DMA1_IT_TC1 | DMA1_IT_HT1)
 
 /* Mid-scale on both channels: what an idle or starved output sits at. A DAC
  * resting at zero would slam the amplifier to one rail. */
@@ -71,6 +88,12 @@ typedef struct _machine_audioout_obj_t {
      * so underruns are only counted once something has actually been queued. */
     bool primed;
     bool running;
+    /* Set by irq(). Doubles as the flag for whether write() may block: the two
+     * are the same decision, and keeping them one field means a caller cannot
+     * end up awaiting a callback from a call that blocked instead. Scanned by
+     * the GC along with the rest of this object, which the root pointer below
+     * keeps reachable. */
+    mp_obj_t handler;
 } machine_audioout_obj_t;
 
 const mp_obj_type_t machine_audioout_type;
@@ -124,6 +147,19 @@ static void audio_blank_free(machine_audioout_obj_t *self) {
     for (uint32_t i = 0; i < space; i++) {
         self->ring[pos] = AUDIO_SILENCE;
         pos = (pos + 1) % self->frames;
+    }
+}
+
+/* Half-transfer and transfer-complete on the circular ring, which between them
+ * say "another half of the ring has been played, so there is room". Nothing is
+ * read or written here: the flags are cleared and the callback is handed to
+ * the scheduler, so it runs as ordinary Python and may allocate and raise. */
+void CH32_IRQ_HANDLER(DMA1_Channel1_IRQHandler);
+void DMA1_Channel1_IRQHandler(void) {
+    DMA1->INTFCR = AUDIO_DMA_FLAGS;
+    machine_audioout_obj_t *self = audioout_obj;
+    if (self != NULL && self->handler != MP_OBJ_NULL) {
+        mp_sched_schedule(self->handler, MP_OBJ_FROM_PTR(self));
     }
 }
 
@@ -222,6 +258,9 @@ static void audio_stop(machine_audioout_obj_t *self) {
     }
     self->running = false;
     TIM_Cmd(TIM6, DISABLE);
+    DMA_ITConfig(AUDIO_DMA_CHANNEL, DMA_IT_TC | DMA_IT_HT, DISABLE);
+    NVIC_DisableIRQ(AUDIO_DMA_IRQN);
+    self->handler = MP_OBJ_NULL;
     DMA_Cmd(AUDIO_DMA_CHANNEL, DISABLE);
     DAC_DMACmd(DAC_Channel_1, DISABLE);
 
@@ -284,6 +323,7 @@ static mp_obj_t machine_audioout_make_new(const mp_obj_type_t *type,
     self->queued_at_write = 0;
     self->last_write_us = 0;
     self->primed = false;
+    self->handler = MP_OBJ_NULL;
     self->ring = m_new(uint32_t, self->frames);
     for (uint32_t i = 0; i < self->frames; i++) {
         self->ring[i] = AUDIO_SILENCE;
@@ -346,6 +386,11 @@ static mp_obj_t machine_audioout_write(mp_obj_t self_in, mp_obj_t buf_in) {
     while (done < total) {
         uint32_t space = audio_free(self);
         if (space == 0) {
+            if (self->handler != MP_OBJ_NULL) {
+                /* Non-blocking: hand back what was taken and let the caller
+                 * wait on the callback for the rest. */
+                break;
+            }
             /* The ring is full, which is the good case: the output is ahead
              * of the producer. Let the scheduler run -- this is where a
              * network read or a keyboard interrupt gets its chance. */
@@ -373,9 +418,42 @@ static mp_obj_t machine_audioout_write(mp_obj_t self_in, mp_obj_t buf_in) {
     self->queued_at_write = self->frames - 1 - audio_free(self);
     self->last_write_us = mp_hal_ticks_us();
     self->primed = true;
-    return MP_OBJ_NEW_SMALL_INT(bufinfo.len);
+    /* Bytes accepted. Equal to the buffer's length unless a callback is set
+     * and the ring filled first, which is the whole point of setting one. */
+    return MP_OBJ_NEW_SMALL_INT(done * 4);
 }
 static MP_DEFINE_CONST_FUN_OBJ_2(machine_audioout_write_obj, machine_audioout_write);
+
+/* Set a callback and write() stops blocking; pass None and it blocks again.
+ * The same call, and the same meaning, as machine.I2S.irq(), machine.SPI.irq()
+ * and machine.I2C.irq() on this port.
+ *
+ * The handler is called with the AudioOut object, from the scheduler rather
+ * than from the interrupt, so it may allocate and raise like any other Python
+ * code. */
+static mp_obj_t machine_audioout_irq(mp_obj_t self_in, mp_obj_t handler) {
+    machine_audioout_obj_t *self = MP_OBJ_TO_PTR(self_in);
+    if (!self->running) {
+        mp_raise_msg(&mp_type_OSError, MP_ERROR_TEXT("AudioOut is deinitialised"));
+    }
+    if (handler != mp_const_none && !mp_obj_is_callable(handler)) {
+        mp_raise_ValueError(MP_ERROR_TEXT("invalid callback"));
+    }
+    if (handler == mp_const_none) {
+        DMA_ITConfig(AUDIO_DMA_CHANNEL, DMA_IT_TC | DMA_IT_HT, DISABLE);
+        self->handler = MP_OBJ_NULL;
+    } else {
+        self->handler = handler;
+        /* Clear first: the ring has been circling since construction, so both
+         * flags are long since set and enabling without clearing would fire
+         * the handler immediately and then again on the real half-transfer. */
+        DMA1->INTFCR = AUDIO_DMA_FLAGS;
+        DMA_ITConfig(AUDIO_DMA_CHANNEL, DMA_IT_TC | DMA_IT_HT, ENABLE);
+        NVIC_EnableIRQ(AUDIO_DMA_IRQN);
+    }
+    return mp_const_none;
+}
+static MP_DEFINE_CONST_FUN_OBJ_2(machine_audioout_irq_obj, machine_audioout_irq);
 
 /* Frames that can be written without blocking. A player uses this to decide
  * whether it has time to decode another chunk. */
@@ -408,6 +486,7 @@ static const mp_rom_map_elem_t machine_audioout_locals_dict_table[] = {
     { MP_ROM_QSTR(MP_QSTR_write), MP_ROM_PTR(&machine_audioout_write_obj) },
     { MP_ROM_QSTR(MP_QSTR_free), MP_ROM_PTR(&machine_audioout_free_obj) },
     { MP_ROM_QSTR(MP_QSTR_underruns), MP_ROM_PTR(&machine_audioout_underruns_obj) },
+    { MP_ROM_QSTR(MP_QSTR_irq), MP_ROM_PTR(&machine_audioout_irq_obj) },
     { MP_ROM_QSTR(MP_QSTR_deinit), MP_ROM_PTR(&machine_audioout_deinit_obj) },
     { MP_ROM_QSTR(MP_QSTR___del__), MP_ROM_PTR(&machine_audioout_deinit_obj) },
 };
