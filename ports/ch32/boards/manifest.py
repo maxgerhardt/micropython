@@ -22,12 +22,6 @@ require("neopixel")
 require("onewire")
 require("ds18x20")
 
-# SSD1306 OLEDs over I2C or SPI. The driver is a framebuf.FrameBuffer
-# subclass, so machine.I2C plus framebuf plus this is a complete display
-# stack with nothing to install -- which is what lets an example detect a
-# panel at runtime and use it, rather than requiring one.
-require("ssd1306")
-
 # HTTP client. requests pulls in nothing else and works over either a plain
 # socket or an ssl-wrapped one, so `import requests` covers http and https
 # without a filesystem present.
