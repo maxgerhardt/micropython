@@ -160,6 +160,7 @@ SRC_C += \
 	machine_sdcard.c \
 	machine_audioout.c \
 	modmp3.c \
+	modfft.c \
 	machine_vio18.c \
 	machine_i2c.c \
 	machine_spi.c \
