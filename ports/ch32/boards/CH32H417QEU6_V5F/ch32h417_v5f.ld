@@ -25,36 +25,62 @@ MEMORY
 	/* Shared region: .text/.rodata, copied from flash by startup. Runs at HCLK
 	   (100 MHz) rather than the V5F core clock; task 6 evaluates alternatives. */
 	ITCM (xrw)     : ORIGIN = 0x200A0000, LENGTH = 128K
-	/* 368K, and the size is set by the *generic* toolchain, not the WCH one:
-	   stock GCC without the xw extension emits about 15K more for the same
-	   sources, so CI overflows this region while a local build still links.
-	   Check with CH32_TOOLCHAIN=generic before trusting a size here.
+	/* The size is set by the *generic* toolchain, not the WCH one: stock GCC
+	   without the xw extension emits more for the same sources, so CI can
+	   overflow this region while a local build still links. Check with
+	   CH32_TOOLCHAIN=generic before trusting a size here.
 
-	   History, because it has only gone one way: 240K until mbedtls (+70K of
-	   TLS), 320K until the RV32 emitter (+25K of backend), then 336K, and now
+	   History, because it only ever went one way: 240K until mbedtls (+70K of
+	   TLS), 320K until the RV32 emitter (+25K of backend), then 336K, then
 	   368K for machine.CAN and machine.Timer, and 400K for the MP3 decoder.
 	   Every increase came out of HEAP2, and that remains the lever: moving
 	   cold code to flash was tried for the decoder and is written up in the
 	   .coldcode section below, where the measurement is. Flash execution is
-	   far worse than the 4x clock ratio implies for anything loop-shaped. */
-	RAM_CODE (xrw) : ORIGIN = 0x20100000, LENGTH = 400K
-	/* USBFS DMA cannot reach DTCM, so endpoint buffers live here, in
-	   the shared region on the system bus. */
-	USB_RAM (xrw)  : ORIGIN = 0x20164000, LENGTH = 16K
+	   far worse than the 4x clock ratio implies for anything loop-shaped.
+
+	   392K is the first time it has gone the other way. .highcode measures
+	   368.8K, so this keeps 23K spare -- enough for the generic toolchain's
+	   excess and a feature on top. If a build overflows, take the next 8K back
+	   from HEAP2 rather than trimming the DMA regions below, which have much
+	   less room than their old sizes suggested. */
+	RAM_CODE (xrw) : ORIGIN = 0x20100000, LENGTH = 392K
+	/* USBFS DMA cannot reach DTCM, so endpoint buffers live here, in the
+	   shared region on the system bus.
+
+	   8K, down from 16K: TinyUSB's .bss for this configuration measures 4.1K,
+	   so the old size was carrying 12K that nothing could ever use. What lands
+	   here is every TinyUSB object's .bss, which grows only if a device class
+	   is added to the build -- and that is a link error, not silent corruption,
+	   because the region is sized. */
+	USB_RAM (xrw)  : ORIGIN = 0x20162000, LENGTH = 8K
 	/* Same reason as USB_RAM: the Ethernet DMA is on the system bus and cannot
-	   reach DTCM either. Descriptors and MAC frame buffers live here. */
-	ETH_RAM (xrw)  : ORIGIN = 0x20168000, LENGTH = 32K
+	   reach DTCM either. Descriptors and MAC frame buffers live here.
+
+	   28K, down from 32K. The contents are fixed by two constants in eth.c:
+	   16 descriptors of 32 bytes plus (ETH_RX_DESC_NUM + ETH_TX_DESC_NUM) MAC
+	   frame buffers of ETH_MAX_PACKET_SIZE, which is 24.3K for 12 RX and 4 TX.
+	   The 3.7K left over is one more RX buffer's worth of slack; raising the
+	   descriptor counts past that fails the link. Deliberately not tightened
+	   further -- the RX ring is what absorbs a burst while Python is busy
+	   elsewhere, and shrinking it trades heap for dropped frames. */
+	ETH_RAM (xrw)  : ORIGIN = 0x20164000, LENGTH = 28K
 	/* The SDMMC bounce buffers, two runs of eight blocks. Its own region
-	   rather than a corner of RAM_CODE, which has no room for it: the generic
-	   toolchain emits ~15K more and overflowed by 128 bytes with these here.
-	   The address itself does not matter to the DMA -- it reads and writes
-	   RAM_CODE, ETH_RAM and this equally -- so this is only about space. */
-	SD_RAM (rw)    : ORIGIN = 0x20170000, LENGTH = 8K
+	   rather than a corner of RAM_CODE, which had no room for it when this was
+	   written. The address itself does not matter to the DMA -- it reads and
+	   writes RAM_CODE, ETH_RAM and this equally -- so this is only about
+	   space. Exactly full at 8K, so there is nothing to reclaim here. */
+	SD_RAM (rw)    : ORIGIN = 0x2016B000, LENGTH = 8K
 	/* The rest of the shared area, out to its end at 0x20180000. Nothing else
 	   had claimed it, so it goes to the GC as a second heap area -- see
 	   MICROPY_GC_SPLIT_HEAP and the gc_add() call in main.c. It takes the heap
-	   from the 162K that fits in DTCM to about 218K. */
-	HEAP2 (rw)     : ORIGIN = 0x20172000, LENGTH = 56K
+	   from the 160K that fits in DTCM to about 237K.
+
+	   This is the slack pool for everything above it: 56K before the regions
+	   were measured against what they actually hold, 76K after. Note it is the
+	   *slow* half of the heap -- the shared area runs at HCLK and benchmarks
+	   about 2x slower than the DTCM half -- so growing it adds capacity rather
+	   than speed. */
+	HEAP2 (rw)     : ORIGIN = 0x2016D000, LENGTH = 76K
 	/* DTCM: zero-wait at the V5F core clock. Holds .data/.bss/stack/heap. */
 	RAM_LOAD (xrw) : ORIGIN = 0x200C0000, LENGTH = 256
 	RAM (xrw)      : ORIGIN = (0x200C0000+256), LENGTH = (256K-256)

@@ -15,9 +15,13 @@
 #define MICROPY_HW_ITCM_HOT_CODE     (1)
 
 /* The GC heap spans two disjoint regions on this board. DTCM holds .data,
- * .bss and the stack as well, which leaves only about 162K of it for the heap;
- * the tail of the shared area past ETH_RAM was unclaimed and adds 144K more.
+ * .bss and the stack as well, which leaves only about 160K of it for the heap;
+ * the tail of the shared area past SD_RAM is unclaimed and adds 76K more.
  * See the .heap2 section in ch32h417_v5f.ld and the gc_add() call in main.c.
+ * That 76K is whatever the regions above it do not use, so it moves whenever
+ * they are resized -- it was 144K before RAM_CODE grew for the MP3 decoder,
+ * 56K after, and 76K once the DMA regions were measured against what they
+ * actually hold rather than left at their original guesses.
  *
  * The two areas are not equivalent. DTCM is zero-wait at the V5F's 400 MHz
  * core clock, while the shared region is reached over the system bus at HCLK:

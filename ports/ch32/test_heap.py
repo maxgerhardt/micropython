@@ -11,7 +11,10 @@ import uctypes
 # The DTCM window ends here; everything above is the shared region.
 DTCM_START = 0x200C0000
 DTCM_END = 0x20100000
-HEAP2_START = 0x20168000
+# Must match the HEAP2 region in ch32h417_v5f.ld. This had been left at
+# ETH_RAM's old base, which is below where the heap actually starts, so the
+# range check accepted addresses that were never in the heap at all.
+HEAP2_START = 0x2016D000
 HEAP2_END = 0x20180000
 
 passed = 0
@@ -31,14 +34,15 @@ gc.collect()
 free = gc.mem_free()
 total = free + gc.mem_alloc()
 
-# Both areas are counted. Area 1 is the ~162K that fits in DTCM and area 2 is
+# Both areas are counted. Area 1 is the ~160K that fits in DTCM and area 2 is
 # whatever is left of the shared region, so the test is that the total is
-# clearly more than area 1 alone: near 162K means gc_add() never ran.
+# clearly more than area 1 alone: near 160K means gc_add() never ran.
 #
 # The threshold is deliberately expressed against area 1 rather than as an
-# absolute. Area 2 has been cut repeatedly -- 144K, then 96K, then 88K, and
-# 56K once RAM_CODE grew for the MP3 decoder -- and a fixed ">240K" written
-# when it was 144K failed for a shrinking heap rather than for a broken one.
+# absolute. Area 2 keeps moving -- 144K, then 96K, then 88K, then 56K once
+# RAM_CODE grew for the MP3 decoder, and 76K after the DMA regions were sized
+# against what they actually hold -- and a fixed ">240K" written when it was
+# 144K failed for a shrinking heap rather than for a broken one.
 print("heap total", total, "free", free)
 check("heap spans both areas", total > 190 * 1024)
 
@@ -65,12 +69,24 @@ while lo < hi:
         hi = mid - 1
 
 check("area 1 is DTCM-sized", 120 * 1024 < lo < 200 * 1024)
-ballast = bytearray(lo)
-check("ballast is in DTCM", uctypes.addressof(ballast) < DTCM_END)
+ballast = [bytearray(lo)]
+check("ballast is in DTCM", uctypes.addressof(ballast[0]) < DTCM_END)
 
-spill = bytearray(4096)
+# Top area 1 up until it really is full. The binary search above finds the
+# largest *single* block area 1 can hold, which is not the same as all of its
+# free space: where the allocator happens to place that block, a few kilobytes
+# can be left stranded below it, and they would absorb the spill and make this
+# look like gc_add() had never run. Keep every block referenced so nothing is
+# handed back.
+while True:
+    block = bytearray(4096)
+    if uctypes.addressof(block) >= DTCM_END:
+        spill = block
+        break
+    ballast.append(block)
+
 spill_addr = uctypes.addressof(spill)
-print("spilled to", hex(spill_addr))
+print("area 1 topped up with %d extra blocks, spilled to %s" % (len(ballast) - 1, hex(spill_addr)))
 check("allocation spills into area 2", HEAP2_START <= spill_addr < HEAP2_END)
 check("spilled block fits inside area 2", spill_addr + 4096 <= HEAP2_END)
 
@@ -85,7 +101,7 @@ for i in range(0, 4096, 4):
         ok = False
         break
 check("area 2 holds what was written", ok)
-check("ballast undisturbed", ballast[0] == 0 and ballast[lo - 1] == 0)
+check("ballast undisturbed", ballast[0][0] == 0 and ballast[0][lo - 1] == 0)
 
 # The GC has to trace and reclaim in area 2 the same as in area 1.
 del spill
